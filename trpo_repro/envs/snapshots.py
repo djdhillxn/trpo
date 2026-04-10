@@ -11,13 +11,13 @@ class EnvSnapshot:
     payload: Any
     np_random_state: Any | None = None
 
-class SnapShotError(RuntimeError):
+class SnapshotError(RuntimeError):
     pass
 
 def clone_env_state(env) -> EnvSnapshot:
     unwrapped = env.unwrapped
     np_state = None
-    if hasattr(unwrapped, "np_random") and hasattr(unwrapped.np_random, "bit_generation"):
+    if hasattr(unwrapped, "np_random") and hasattr(unwrapped.np_random, "bit_generator"):
         np_state = copy.deepcopy(unwrapped.np_random.bit_generator.state)
 
     if hasattr(unwrapped, "ale"):
@@ -26,14 +26,14 @@ def clone_env_state(env) -> EnvSnapshot:
             return EnvSnapshot(payload=ale.cloneSystemState(), np_random_state=np_state)
         if hasattr(ale, "cloneState"):
             return EnvSnapshot(payload=ale.cloneState(), np_random_state=np_state)
-    
+
     if hasattr(unwrapped, "data") and hasattr(unwrapped, "set_state"):
         qpos = np.array(unwrapped.data.qpos).copy()
         qvel = np.array(unwrapped.data.qvel).copy()
         payload = {"qpos": qpos, "qvel": qvel}
         return EnvSnapshot(payload=payload, np_random_state=np_state)
-    
-    raise SnapshotError("environment does not expose a known state snapshot API.")
+
+    raise SnapshotError("Environment does not expose a known state snapshot API.")
 
 
 def restore_env_state(env, snapshot: EnvSnapshot) -> None:
