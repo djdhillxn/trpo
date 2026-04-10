@@ -1,6 +1,6 @@
 inherits: ../base.yaml
 train:
-  run_name: cartpole_linear
+  run_name: cartpole_modern_gae
   epochs: 50
   steps_per_epoch: 5000
   max_ep_len: 500
@@ -8,12 +8,12 @@ env:
   type: classic_control
   id: CartPole-v1
 algo:
+  estimator: gae
+  normalize_weights: true
+  bootstrap_truncated_paths: true
   max_kl: 0.01
   gamma: 0.99
-  lam: 1.0
-  estimator: paper_mc
-  normalize_weights: false
-  bootstrap_truncated_paths: false
+  lam: 0.97
   vf_lr: 0.001
   vf_iters: 40
   vf_batch_size: 1024

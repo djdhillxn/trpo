@@ -1,12 +1,12 @@
 inherits: ../base.yaml
 train:
-  run_name: cartpole_linear
-  epochs: 50
-  steps_per_epoch: 5000
-  max_ep_len: 500
+  run_name: seaquest_single_path
+  epochs: 500
+  steps_per_epoch: 100000
+  max_ep_len: 10000
 env:
-  type: classic_control
-  id: CartPole-v1
+  type: atari
+  id: ALE/Seaquest-v5
 algo:
   max_kl: 0.01
   gamma: 0.99
@@ -14,10 +14,11 @@ algo:
   estimator: paper_mc
   normalize_weights: false
   bootstrap_truncated_paths: false
-  vf_lr: 0.001
+  vf_lr: 0.0003
   vf_iters: 40
-  vf_batch_size: 1024
+  vf_batch_size: 2048
 model:
-  activation: tanh
+  activation: relu
   policy_hidden_sizes: []
   value_hidden_sizes: []
+  cnn_fc_dim: 20

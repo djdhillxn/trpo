@@ -1,12 +1,12 @@
 inherits: ../base.yaml
 train:
-  run_name: hopper_single_path
+  run_name: walker2d_single_path
   epochs: 200
   steps_per_epoch: 1000000
   max_ep_len: 1000
 env:
   type: mujoco
-  id: Hopper-v5
+  id: Walker2d-v5
 algo:
   max_kl: 0.01
   gamma: 0.99

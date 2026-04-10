@@ -14,7 +14,9 @@ env:
 algo:
   gamma: 0.99
   lam: 1.0
-  advantage_mode: mc
+  estimator: paper_mc
+  normalize_weights: false
+  bootstrap_truncated_paths: false
   max_kl: 0.01
   cg_iters: 10
   cg_damping: 0.1
