@@ -1,0 +1,22 @@
+inherits: ../base.yaml
+train:
+  run_name: hopper_single_path
+  epochs: 200
+  steps_per_epoch: 100000
+  max_ep_len: 1000
+env:
+  type: mujoco
+  id: Hopper-v5
+algo:
+  max_kl: 0.01
+  gamma: 0.99
+  lam: 1.0
+  advantage_mode: mc
+  vf_lr: 0.001
+  vf_iters: 80
+  vf_batch_size: 4096
+model:
+  activation: tanh
+  policy_hidden_sizes: [30]
+  value_hidden_sizes: [30]
+  init_log_std: -0.5

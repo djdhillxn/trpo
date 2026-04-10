@@ -1,0 +1,21 @@
+inherits: ../base.yaml
+train:
+  run_name: cartpole_linear
+  epochs: 50
+  steps_per_epoch: 5000
+  max_ep_len: 500
+env:
+  type: classic_control
+  id: CartPole-v1
+algo:
+  max_kl: 0.01
+  gamma: 0.99
+  lam: 1.0
+  advantage_mode: mc
+  vf_lr: 0.001
+  vf_iters: 40
+  vf_batch_size: 1024
+model:
+  activation: tanh
+  policy_hidden_sizes: []
+  value_hidden_sizes: []
