@@ -16,24 +16,24 @@ class FrameStackWrapper:
             dtype=obs_space.dtype,
         )
         self.action_space = env.action_space
-    
+
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
         for _ in range(self.num_stack):
             self.frames.append(obs)
         return self._get_obs(), info
-    
+
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         self.frames.append(obs)
         return self._get_obs(), reward, terminated, truncated, info
-    
+
     def _get_obs(self):
         return np.stack(list(self.frames), axis=0)
-    
+
     def __getattr__(self, item):
         return getattr(self.env, item)
-    
+
 
 def make_atari_env(env_id: str, seed: int, cfg):
     import ale_py
@@ -42,6 +42,8 @@ def make_atari_env(env_id: str, seed: int, cfg):
 
     gym.register_envs(ale_py)
 
+    # to mimic older DeepMind-style pipelines more closely, we disable sticky actions
+    # and use explicit preprocessing frame-skip instead of relying on v5 defaults.
     env = gym.make(
         env_id,
         obs_type="rgb",
@@ -60,5 +62,5 @@ def make_atari_env(env_id: str, seed: int, cfg):
         grayscale_newaxis=False,
         scale_obs=False,
     )
-    env = FrameStackWrapper(env, num_stack=int(cfg.env.get("frame_stack" ,4)))
+    env = FrameStackWrapper(env, num_stack=int(cfg.env.get("frame_stack", 4)))
     return env
