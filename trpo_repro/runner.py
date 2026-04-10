@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -24,12 +23,32 @@ class Runner:
         self.logger = JsonlLogger(self.output_dir)
         self.checkpoint_dir = ensure_dir(self.output_dir / "checkpoints")
 
+        self.estimator = self._resolve_estimator(cfg)
+        self.use_value_function = self.estimator in {"mc_baseline", "gae"}
+        self.normalize_weights = bool(cfg.algo.get("normalize_weights", self.estimator != "paper_mc"))
+        self.bootstrap_truncated_paths = bool(
+            cfg.algo.get("bootstrap_truncated_paths", self.estimator != "paper_mc")
+        )
+
         self.policy = make_policy(env.observation_space, env.action_space, cfg)
-        self.value_fn = ValueFunction(tuple(env.observation_space.shape), cfg)
+        self.value_fn = ValueFunction(tuple(env.observation_space.shape), cfg) if self.use_value_function else None
         self.agent = TRPOAgent(self.policy, self.value_fn, cfg, self.device)
 
         self.normalize_obs = bool(cfg.train.get("normalize_obs", False)) and len(env.observation_space.shape) == 1
         self.obs_rms = RunningMeanStd(shape=tuple(env.observation_space.shape)) if self.normalize_obs else None
+
+    @staticmethod
+    def _resolve_estimator(cfg) -> str:
+        explicit = cfg.algo.get("estimator")
+        if explicit is not None:
+            return str(explicit).lower()
+
+        legacy = str(cfg.algo.get("advantage_mode", "mc")).lower()
+        mapping = {
+            "mc": "mc_baseline",
+            "gae": "gae",
+        }
+        return mapping.get(legacy, legacy)
 
     def _preprocess_obs(self, obs: np.ndarray) -> np.ndarray:
         obs = np.asarray(obs)
@@ -37,7 +56,7 @@ class Runner:
             self.obs_rms.update(obs[None, ...])
             obs = self.obs_rms.normalize(obs)
         return obs.astype(np.float32)
-    
+
     def train(self) -> None:
         obs, _ = self.env.reset()
         obs = self._preprocess_obs(obs)
@@ -53,32 +72,33 @@ class Runner:
         else:
             act_shape = tuple(self.env.action_space.shape)
             act_dtype = np.float32
-        
+
         total_epochs = int(self.cfg.train.epochs)
-        steps_per_epoch = int(self.cfg.train.steps_per_epoch)
+        target_steps = int(self.cfg.train.steps_per_epoch)
         max_ep_len = int(self.cfg.train.get("max_ep_len", 1000))
         gamma = float(self.cfg.algo.gamma)
         lam = float(self.cfg.algo.get("lam", 1.0))
-        advantage_mode = str(self.cfg.algo.get("advantage_mode", "mc"))
 
         for epoch in range(1, total_epochs + 1):
             start_time = time.time()
+            buffer_size = target_steps + (max_ep_len if self.estimator == "paper_mc" else 0)
             buffer = TrajectoryBuffer(
                 obs_shape=obs_shape,
                 act_shape=act_shape,
-                size=steps_per_epoch,
+                size=buffer_size,
                 gamma=gamma,
                 lam=lam,
-                advantage_mode=advantage_mode,
+                estimator=self.estimator,
                 act_dtype=act_dtype,
+                normalize_weights=self.normalize_weights,
             )
 
-            for t in range(steps_per_epoch):
+            while True:
                 obs_tensor = to_tensor(obs[None, ...], self.device, dtype=torch.float32)
                 action_t, value_t, logp_t = self.agent.step(obs_tensor)
                 action = action_t.squeeze(0).cpu().numpy()
-                value = float(value_t.squeeze(0).cpu().item())
-                logp = float(logp_t.squeeze(0).cpu().item() if logp_t.ndim > 0 else float(logp_t.cpu().item()))
+                value = float(value_t.squeeze(0).cpu().item()) if value_t.ndim > 0 else float(value_t.cpu().item())
+                logp = float(logp_t.squeeze(0).cpu().item()) if logp_t.ndim > 0 else float(logp_t.cpu().item())
 
                 next_obs, reward, terminated, truncated, _ = self.env.step(action)
                 next_obs = self._preprocess_obs(next_obs)
@@ -89,37 +109,40 @@ class Runner:
 
                 timeout = ep_len >= max_ep_len
                 terminal = terminated or truncated or timeout
-                epoch_ended = t == steps_per_epoch - 1
+                reached_target = buffer.ptr >= target_steps
 
-                if terminal or epoch_ended:
-                    if terminal:
-                        last_val = 0.0 if terminated else float(
-                            self.agent.value(to_tensor(next_obs[None, ...], self.device, dtype=torch.float32)).cpu().item()
-                        )
-                    else:
-                        last_val = float(
-                            self.agent.value(to_tensor(next_obs[None, ...], self.device, dtype=torch.float32)).cpu().item()
-                        )
-                    buffer.finish_path(last_val)
+                if terminal:
+                    buffer.finish_path(last_val=0.0)
+                    episode_returns.append(ep_ret)
+                    episode_lengths.append(ep_len)
+                    obs, _ = self.env.reset()
+                    obs = self._preprocess_obs(obs)
+                    ep_ret = 0.0
+                    ep_len = 0
+                    if reached_target:
+                        break
+                    continue
 
-                    if terminal:
-                        episode_returns.append(ep_ret)
-                        episode_lengths.append(ep_len)
-                        obs, _ = self.env.reset()
-                        obs = self._preprocess_obs(obs)
-                        ep_ret = 0.0
-                        ep_len = 0
-                    else:
-                        obs = next_obs
-                else:
-                    obs = next_obs
-            
+                obs = next_obs
+                if reached_target:
+                    if self.estimator == "paper_mc":
+                        # reproducing exactly the method demonstrated in the 2015 trpo paper: single-path TRPO uses complete sampled trajectories and no value bootstrap.
+                        continue
+
+                    last_val = 0.0
+                    if self.bootstrap_truncated_paths:
+                        next_obs_tensor = to_tensor(next_obs[None, ...], self.device, dtype=torch.float32)
+                        last_val = float(self.agent.value(next_obs_tensor).cpu().item())
+                    buffer.finish_path(last_val=last_val)
+                    break
+
             batch = buffer.get(self.device)
             stats = self.agent.update(batch)
             wall_time = time.time() - start_time
 
             record = {
                 "epoch": epoch,
+                "estimator": self.estimator,
                 "episodes_in_epoch": len(episode_returns),
                 "ep_return_mean": float(np.mean(episode_returns)) if episode_returns else float("nan"),
                 "ep_return_std": float(np.std(episode_returns)) if episode_returns else float("nan"),
@@ -142,30 +165,17 @@ class Runner:
             save_every = int(self.cfg.train.get("save_interval", 10))
             if epoch % save_every == 0 or epoch == total_epochs:
                 self.save_checkpoint(epoch)
-        
+
         self.logger.close()
 
     def save_checkpoint(self, epoch: int) -> None:
         ckpt = {
             "epoch": epoch,
+            "estimator": self.estimator,
             "policy": self.policy.state_dict(),
-            "value_fn": self.value_fn.state_dict(),
+            "value_fn": None if self.value_fn is None else self.value_fn.state_dict(),
             "obs_rms_mean": None if self.obs_rms is None else self.obs_rms.mean,
             "obs_rms_var": None if self.obs_rms is None else self.obs_rms.var,
             "obs_rms_count": None if self.obs_rms is None else self.obs_rms.count,
         }
         torch.save(ckpt, self.checkpoint_dir / f"epoch_{epoch:04d}.pt")
-
-
-
-
-
-
-
-
-
-
-
-
-
-

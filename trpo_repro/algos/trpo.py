@@ -22,44 +22,57 @@ class TRPOStats:
     cg_norm: float
 
 class TRPOAgent:
-    def __init__(self, policy: nn.Module, value_fn: nn.Module, cfg, device: torch.device) -> None:
+    def __init__(self, policy: nn.Module, value_fn: nn.Module | None, cfg, device: torch.device) -> None:
         self.policy = policy.to(device)
-        self.value_fn = value_fn.to(device)
+        self.value_fn = None if value_fn is None else value_fn.to(device)
         self.cfg = cfg
         self.device = device
-        self.vf_optimizer = torch.optim.Adam(
-            self.value_fn.parameters(),
-            lr=float(cfg.algo.get("vf_lr", 1e-3)),
-            weight_decay=float(cfg.algo.get("vf_weight_decay", 0.0)),
-        )
+        self.vf_optimizer = None
+        if self.value_fn is not None:
+            self.vf_optimizer = torch.optim.Adam(
+                self.value_fn.parameters(),
+                lr=float(cfg.algo.get("vf_lr", 1e-3)),
+                weight_decay=float(cfg.algo.get("vf_weight_decay", 0.0)),
+            )
 
     @torch.no_grad()
     def step(self, obs: torch.Tensor, deterministic: bool = False):
         action, logp, _ = self.policy.act(obs, deterministic=deterministic)
-        value = self.value_fn(obs)
+        if self.value_fn is None:
+            value = torch.zeros(obs.shape[0], dtype=torch.float32, device=obs.device)
+        else:
+            value = self.value_fn(obs)
         return action, value, logp
-    
+
     @torch.no_grad()
     def value(self, obs: torch.Tensor) -> torch.Tensor:
+        if self.value_fn is None:
+            return torch.zeros(obs.shape[0], dtype=torch.float32, device=obs.device)
         return self.value_fn(obs)
-    
+
     def update(self, batch: dict[str, torch.Tensor]) -> TRPOStats:
         obs = batch["obs"]
         act = batch["act"]
         ret = batch["ret"]
-        adv = batch["adv"]
+        weight = batch.get("weight", batch["adv"])
         old_logp = batch["logp"]
 
         with torch.no_grad():
             old_dist = self.policy.distribution(obs)
-            old_surr = self._surrogate(obs, act, adv, old_logp).item()
+            old_surr = self._surrogate(obs, act, weight, old_logp).item()
             entropy = old_dist.entropy().mean().item()
-            value_loss_before = self._value_loss(obs, ret).item()
+            if self.value_fn is None:
+                value_loss_before = float("nan")
+            else:
+                value_loss_before = self._value_loss(obs, ret).item()
 
-        self._update_value_function(obs, ret)
-        value_loss_after = self._value_loss(obs, ret).item()
+        if self.value_fn is None:
+            value_loss_after = float("nan")
+        else:
+            self._update_value_function(obs, ret)
+            value_loss_after = self._value_loss(obs, ret).item()
 
-        surr = self._surrogate(obs, act, adv, old_logp)
+        surr = self._surrogate(obs, act, weight, old_logp)
         grads = torch.autograd.grad(surr, self.policy.parameters())
         g = flat_grad(grads).detach()
 
@@ -72,7 +85,7 @@ class TRPOAgent:
             hvp = torch.autograd.grad(kl_v, self.policy.parameters())
             damping = float(self.cfg.algo.get("cg_damping", 1e-1))
             return flat_grad(hvp).detach() + damping * v
-        
+
         step_dir = conjugate_gradient(
             fvp,
             g,
@@ -85,18 +98,18 @@ class TRPOAgent:
         expected_improve = (g * full_step).sum().item()
         old_params = flat_params(self.policy)
 
-        def evaluate(candidate_params: torch.Tensor) -> tuple(float, float):
+        def evaluate(candidate_params: torch.Tensor) -> tuple[float, float]:
             set_flat_params(self.policy, candidate_params)
             with torch.no_grad():
                 new_dist = self.policy.distribution(obs)
-                new_surr = self._surrogate(obs, act, adv, old_logp).item()
+                new_surr = self._surrogate(obs, act, weight, old_logp).item()
                 kl_val = mean_kl(old_dist, new_dist).item()
             improvement = new_surr - old_surr
             return improvement, kl_val
-        
+
         new_params, success, _, approx_kl = backtracking_line_search(
             old_params=old_params,
-            full_steps=full_step,
+            full_step=full_step,
             evaluate=evaluate,
             backtrack_coeff=float(self.cfg.algo.get("backtrack_coeff", 0.8)),
             max_backtracks=int(self.cfg.algo.get("backtrack_iters", 10)),
@@ -106,8 +119,8 @@ class TRPOAgent:
         set_flat_params(self.policy, new_params if success else old_params)
 
         with torch.no_grad():
-            policy_loss_after = self._surrogate(obs, act, adv, old_logp).item()
-        
+            policy_loss_after = self._surrogate(obs, act, weight, old_logp).item()
+
         return TRPOStats(
             policy_loss_before=old_surr,
             policy_loss_after=policy_loss_after,
@@ -119,17 +132,21 @@ class TRPOAgent:
             cg_norm=step_dir.norm().item(),
         )
 
-    def _surrogate(self, obs, act, adv, old_logp):
+    def _surrogate(self, obs, act, weight, old_logp):
         dist = self.policy.distribution(obs)
         logp = self.policy.log_prob_from_dist(dist, act)
         ratio = torch.exp(logp - old_logp)
-        return (ratio * adv).mean()
-    
+        return (ratio * weight).mean()
+
     def _value_loss(self, obs, ret):
+        if self.value_fn is None:
+            raise RuntimeError("value loss requested but value function is not enabled...")
         pred = self.value_fn(obs)
         return ((pred - ret) ** 2).mean()
-    
+
     def _update_value_function(self, obs, ret) -> None:
+        if self.value_fn is None or self.vf_optimizer is None:
+            return
         vf_iters = int(self.cfg.algo.get("vf_iters", 80))
         batch_size = int(self.cfg.algo.get("vf_batch_size", len(obs)))
         n = len(obs)
@@ -141,4 +158,3 @@ class TRPOAgent:
                 self.vf_optimizer.zero_grad()
                 loss.backward()
                 self.vf_optimizer.step()
-
