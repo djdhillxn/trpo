@@ -5,5 +5,5 @@ matplotlib>=3.8
 tqdm>=4.66
 gymnasium>=0.29
 ale-py>=0.10
-autorom[accept-rom-licence]>=0.6
+autorom[accept-rom-license]>=0.6
 gymnasium[mujoco]>=0.29
