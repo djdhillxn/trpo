@@ -13,7 +13,7 @@ def to_tensor(array, device: torch.device, dtype: torch.dtype | None = None) -> 
 class RunningMeanStd:
     def __init__(self, shape: tuple[int, ...], epsilon: float = 1e-4) -> None:
         self.mean = np.zeros(shape, dtype=np.float64)
-        self.var = np.zeros(shape, dtype=np.float64)
+        self.var = np.ones(shape, dtype=np.float64)
         self.count = epsilon
 
     def update(self, x: np.ndarray) -> None:
