@@ -67,10 +67,10 @@ class GaussianPolicy(BasePolicy):
                 self.body = nn.Identity()
                 body_out_dim = input_dim
             self.mean_layer = nn.Linear(body_out_dim, action_dim)
-        
+
         init_log_std = float(cfg.model.get("init_log_std", -0.5))
         self.log_std = nn.Parameter(torch.ones(action_dim) * init_log_std)
-    
+
     def _features(self, obs: torch.Tensor) -> torch.Tensor:
         if obs.ndim > 2 and isinstance(self.body, AtariBody):
             return self.body(obs)
@@ -104,19 +104,19 @@ class CategoricalPolicy(BasePolicy):
                 self.body = nn.Identity()
                 body_out_dim = input_dim
             self.logits_layer = nn.Linear(body_out_dim, num_actions)
-        
+
     def _features(self, obs: torch.Tensor) -> torch.Tensor:
         if obs.ndim > 2 and isinstance(self.body, AtariBody):
             return self.body(obs)
         if obs.ndim > 2:
             obs = obs.view(obs.shape[0], -1)
         return self.body(obs)
-    
+
     def distribution(self, obs: torch.Tensor):
         feat = self._features(obs)
         logits = self.logits_layer(feat)
         return Categorical(logits=logits)
-    
+
 
 def make_policy(obs_space, act_space, cfg):
     obs_shape = tuple(obs_space.shape)
@@ -124,11 +124,9 @@ def make_policy(obs_space, act_space, cfg):
         return CategoricalPolicy(obs_shape=obs_shape, num_actions=act_space.n, cfg=cfg)
     if hasattr(act_space, "shape"):
         return GaussianPolicy(obs_shape=obs_shape, action_dim=int(np.prod(act_space.shape)), cfg=cfg)
-    return TypeError("Unsupported action space")
+    raise TypeError("Unsupported action space")
+
 
 def mean_kl(old_dist, new_dist) -> torch.Tensor:
     return kl_divergence(old_dist, new_dist).mean()
-
-
-        
-            
+    
