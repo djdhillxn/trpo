@@ -3,6 +3,7 @@ from __future__ import annotations
 from trpo_repro.envs.atari import make_atari_env
 from trpo_repro.envs.mujoco import make_mujoco_env
 
+
 def make_env(cfg, seed: int):
     env_type = cfg.env.type.lower()
     env_id = cfg.env.id

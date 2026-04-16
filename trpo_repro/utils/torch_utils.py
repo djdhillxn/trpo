@@ -6,11 +6,15 @@ import numpy as np
 import torch
 from torch import nn
 
+
 def to_tensor(array, device: torch.device, dtype: torch.dtype | None = None) -> torch.Tensor:
     tensor = torch.as_tensor(array, device=device)
     return tensor.to(dtype=dtype) if dtype is not None else tensor
 
+
 class RunningMeanStd:
+    """Simple running mean/std tracker for observation normalization."""
+
     def __init__(self, shape: tuple[int, ...], epsilon: float = 1e-4) -> None:
         self.mean = np.zeros(shape, dtype=np.float64)
         self.var = np.ones(shape, dtype=np.float64)
@@ -39,9 +43,11 @@ class RunningMeanStd:
         if clip is not None:
             out = np.clip(out, -clip, clip)
         return out.astype(np.float32)
-    
+
+
 def flat_params(module: nn.Module) -> torch.Tensor:
     return torch.cat([param.data.view(-1) for param in module.parameters()])
+
 
 @torch.no_grad()
 def set_flat_params(module: nn.Module, flat: torch.Tensor) -> None:
@@ -50,6 +56,7 @@ def set_flat_params(module: nn.Module, flat: torch.Tensor) -> None:
         numel = param.numel()
         param.copy_(flat[offset : offset + numel].view_as(param))
         offset += numel
+
 
 def flat_grad(grads: Iterable[torch.Tensor | None]) -> torch.Tensor:
     flat = []

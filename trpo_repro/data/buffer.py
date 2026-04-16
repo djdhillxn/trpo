@@ -3,7 +3,9 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+
 EstimatorName = str
+
 
 def discounted_cumsum(x: np.ndarray, discount: float) -> np.ndarray:
     out = np.zeros_like(x, dtype=np.float32)
@@ -12,6 +14,7 @@ def discounted_cumsum(x: np.ndarray, discount: float) -> np.ndarray:
         running = x[i] + discount * running
         out[i] = running
     return out
+
 
 class TrajectoryBuffer:
     def __init__(
@@ -69,14 +72,14 @@ class TrajectoryBuffer:
             self.ret_buf[path_slice] = discounted_cumsum(rews, self.gamma)[:-1]
             self.weight_buf[path_slice] = self.ret_buf[path_slice]
         else:
-            raise ValueError(f"unknown estimator mode: {self.estimator}")
+            raise ValueError(f"Unknown estimator mode: {self.estimator}")
 
         self.path_start_idx = self.ptr
 
     def get(self, device: torch.device) -> dict[str, torch.Tensor]:
         size = self.ptr
         if size <= 0:
-            raise RuntimeError("empty buffer...")
+            raise RuntimeError("Buffer is empty.")
 
         weight_buf = self.weight_buf[:size].copy()
         if self.normalize_weights and size > 1:

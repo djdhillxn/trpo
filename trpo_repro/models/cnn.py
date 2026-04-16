@@ -3,7 +3,15 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+
 class AtariBody(nn.Module):
+    """CNN close to the parameter count described in the TRPO paper.
+
+    Uses 16-channel conv layers and a 20-unit fully-connected layer. The kernel / stride
+    choices here are the common 8x8/4 and 4x4/2 setup, which matches the cited total
+    parameter count much more closely than using 4x4 filters in both layers.
+    """
+
     def __init__(self, in_channels: int, hidden_dim: int = 20) -> None:
         super().__init__()
         self.conv = nn.Sequential(
@@ -21,8 +29,7 @@ class AtariBody(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.float() / 255.0
         if x.ndim != 4:
-            raise ValueError(f"expected Atari input shape [B, C, H, W], got {tuple(x.shape)}")
+            raise ValueError(f"Expected Atari input shape [B, C, H, W], got {tuple(x.shape)}")
         x = self.conv(x)
         x = x.flatten(start_dim=1)
         return self.fc(x)
-        

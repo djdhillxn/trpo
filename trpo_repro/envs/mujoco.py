@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 def make_mujoco_env(env_id: str, seed: int, cfg):
     import gymnasium as gym
 

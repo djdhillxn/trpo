@@ -4,7 +4,9 @@ from collections.abc import Callable
 
 import torch
 
+
 EvalFn = Callable[[torch.Tensor], tuple[float, float]]
+
 
 def backtracking_line_search(
     old_params: torch.Tensor,

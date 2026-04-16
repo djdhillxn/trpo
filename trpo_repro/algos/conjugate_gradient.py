@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+
 def conjugate_gradient(Avp, b: torch.Tensor, nsteps: int, residual_tol: float = 1e-10) -> torch.Tensor:
     x = torch.zeros_like(b)
     r = b.clone()

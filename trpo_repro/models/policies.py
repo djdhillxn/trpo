@@ -11,6 +11,7 @@ from torch.distributions import Categorical, Independent, Normal, kl_divergence
 from trpo_repro.models.cnn import AtariBody
 from trpo_repro.models.mlp import build_mlp
 
+
 def _build_body_mlp(input_dim: int, hidden_sizes: list[int], activation: str) -> nn.Sequential:
     layers: list[nn.Module] = []
     prev = input_dim
@@ -21,20 +22,22 @@ def _build_body_mlp(input_dim: int, hidden_sizes: list[int], activation: str) ->
         prev = size
     return nn.Sequential(*layers)
 
+
 @dataclass
 class DistBatch:
     dist: torch.distributions.Distribution
     entropy: torch.Tensor
+
 
 class BasePolicy(nn.Module):
     is_discrete: bool = False
 
     def distribution(self, obs: torch.Tensor):
         raise NotImplementedError
-    
+
     def log_prob_from_dist(self, dist, action: torch.Tensor) -> torch.Tensor:
         return dist.log_prob(action)
-    
+
     def act(self, obs: torch.Tensor, deterministic: bool = False):
         dist = self.distribution(obs)
         if self.is_discrete:
@@ -43,10 +46,10 @@ class BasePolicy(nn.Module):
             action = dist.mean if deterministic else dist.sample()
         logp = self.log_prob_from_dist(dist, action)
         return action, logp, dist
-    
+
     def entropy(self, obs: torch.Tensor) -> torch.Tensor:
         return self.distribution(obs).entropy().mean()
-    
+
 
 class GaussianPolicy(BasePolicy):
     is_discrete = False
@@ -77,13 +80,13 @@ class GaussianPolicy(BasePolicy):
         if obs.ndim > 2:
             obs = obs.view(obs.shape[0], -1)
         return self.body(obs)
-    
+
     def distribution(self, obs: torch.Tensor):
         feat = self._features(obs)
         mean = self.mean_layer(feat)
         std = torch.exp(self.log_std).expand_as(mean)
         return Independent(Normal(mean, std), 1)
-    
+
 
 class CategoricalPolicy(BasePolicy):
     is_discrete = True
@@ -127,6 +130,14 @@ def make_policy(obs_space, act_space, cfg):
     raise TypeError("Unsupported action space")
 
 
+def per_state_kl(old_dist, new_dist) -> torch.Tensor:
+    """Return the per-sample KL divergence between two policy batches."""
+    return kl_divergence(old_dist, new_dist)
+
+
 def mean_kl(old_dist, new_dist) -> torch.Tensor:
-    return kl_divergence(old_dist, new_dist).mean()
-    
+    return per_state_kl(old_dist, new_dist).mean()
+
+
+def max_kl(old_dist, new_dist) -> torch.Tensor:
+    return per_state_kl(old_dist, new_dist).max()

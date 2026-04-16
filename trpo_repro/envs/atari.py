@@ -4,7 +4,10 @@ from collections import deque
 
 import numpy as np
 
+
 class FrameStackWrapper:
+    """Small compatibility wrapper for stacked observations."""
+
     def __init__(self, env, num_stack: int = 4):
         self.env = env
         self.num_stack = num_stack
@@ -42,7 +45,7 @@ def make_atari_env(env_id: str, seed: int, cfg):
 
     gym.register_envs(ale_py)
 
-    # to mimic older DeepMind-style pipelines more closely, we disable sticky actions
+    # To mimic older DeepMind-style pipelines more closely, we disable sticky actions
     # and use explicit preprocessing frame-skip instead of relying on v5 defaults.
     env = gym.make(
         env_id,

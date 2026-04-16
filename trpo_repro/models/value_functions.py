@@ -7,6 +7,7 @@ from torch import nn
 from trpo_repro.models.cnn import AtariBody
 from trpo_repro.models.mlp import build_mlp
 
+
 class ValueFunction(nn.Module):
     def __init__(self, obs_shape: tuple[int, ...], cfg) -> None:
         super().__init__()

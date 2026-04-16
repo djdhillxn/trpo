@@ -40,5 +40,6 @@ def main():
     runner = Runner(env=env, cfg=cfg, output_dir=output_dir, device=args.device)
     runner.train()
 
+
 if __name__ == "__main__":
     main()

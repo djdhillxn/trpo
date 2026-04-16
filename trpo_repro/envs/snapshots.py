@@ -6,13 +6,16 @@ from typing import Any
 
 import numpy as np
 
+
 @dataclass
 class EnvSnapshot:
     payload: Any
     np_random_state: Any | None = None
 
+
 class SnapshotError(RuntimeError):
     pass
+
 
 def clone_env_state(env) -> EnvSnapshot:
     unwrapped = env.unwrapped
@@ -49,9 +52,9 @@ def restore_env_state(env, snapshot: EnvSnapshot) -> None:
         if hasattr(ale, "restoreState"):
             ale.restoreState(snapshot.payload)
             return
-        
+
     if hasattr(unwrapped, "set_state") and isinstance(snapshot.payload, dict):
         unwrapped.set_state(snapshot.payload["qpos"], snapshot.payload["qvel"])
         return
-    
-    raise SnapshotError("environment does not expose a known state restore API.")
+
+    raise SnapshotError("Environment does not expose a known state restore API.")
