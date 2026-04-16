@@ -1,0 +1,23 @@
+inherits: ../base.yaml
+train:
+  run_name: cartpole_trpo_max_kl
+  epochs: 50
+  steps_per_epoch: 5000
+  max_ep_len: 500
+env:
+  type: classic_control
+  id: CartPole-v1
+method:
+  name: trpo_max_kl
+algo:
+  estimator: paper_mc
+  normalize_weights: false
+  bootstrap_truncated_paths: false
+  max_kl: 0.01
+  gamma: 0.99
+  lam: 1.0
+  fvp_kl_metric: average
+model:
+  activation: tanh
+  policy_hidden_sizes: []
+  value_hidden_sizes: []

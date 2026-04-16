@@ -1,0 +1,18 @@
+inherits: ../base.yaml
+train:
+  run_name: swimmer_random
+  epochs: 200
+  steps_per_epoch: 100000
+  max_ep_len: 1000
+env:
+  type: mujoco
+  id: Swimmer-v5
+method:
+  name: random
+  variant: uniform
+algo:
+  estimator: null
+model:
+  policy_hidden_sizes: [30]
+  value_hidden_sizes: [30]
+  init_log_std: -0.5

@@ -1,0 +1,19 @@
+inherits: ../base.yaml
+train:
+  run_name: pong_random
+  epochs: 500
+  steps_per_epoch: 100000
+  max_ep_len: 10000
+env:
+  type: atari
+  id: ALE/Pong-v5
+method:
+  name: random
+  variant: uniform
+algo:
+  estimator: null
+model:
+  activation: relu
+  policy_hidden_sizes: []
+  value_hidden_sizes: []
+  cnn_fc_dim: 20

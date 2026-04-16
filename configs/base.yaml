@@ -11,6 +11,10 @@ env:
   type: mujoco
   id: CartPole-v1
 
+method:
+  name: trpo
+  variant: default
+
 algo:
   gamma: 0.99
   lam: 1.0
@@ -23,6 +27,8 @@ algo:
   cg_residual_tol: 1.0e-10
   backtrack_coeff: 0.8
   backtrack_iters: 10
+  fvp_kl_metric: average
+  npg_stepsize: 0.05
   vf_lr: 0.001
   vf_weight_decay: 0.0
   vf_iters: 40

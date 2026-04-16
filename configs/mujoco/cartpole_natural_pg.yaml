@@ -1,0 +1,24 @@
+inherits: ../base.yaml
+train:
+  run_name: cartpole_natural_pg
+  epochs: 50
+  steps_per_epoch: 5000
+  max_ep_len: 500
+env:
+  type: classic_control
+  id: CartPole-v1
+method:
+  name: natural_pg
+algo:
+  estimator: paper_mc
+  normalize_weights: false
+  bootstrap_truncated_paths: false
+  gamma: 0.99
+  lam: 1.0
+  npg_stepsize: 0.05
+  cg_iters: 10
+  cg_damping: 0.1
+model:
+  activation: tanh
+  policy_hidden_sizes: []
+  value_hidden_sizes: []
