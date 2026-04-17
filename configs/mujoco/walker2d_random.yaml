@@ -1,9 +1,12 @@
 inherits: ../base.yaml
 train:
-  run_name: swimmer_random
+  run_name: walker2d_random
+  epochs: 200
+  steps_per_epoch: 1000000
+  max_ep_len: 1000
 env:
   type: mujoco
-  id: Swimmer-v5
+  id: Walker2d-v5
 method:
   name: random
   variant: uniform
@@ -12,6 +15,6 @@ algo:
   normalize_weights: false
   bootstrap_truncated_paths: false
 model:
-  policy_hidden_sizes: [30]
-  value_hidden_sizes: [30]
+  policy_hidden_sizes: [50]
+  value_hidden_sizes: [50]
   init_log_std: -0.5

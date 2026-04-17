@@ -1,17 +1,22 @@
 inherits: ../base.yaml
 train:
-  run_name: swimmer_random
+  run_name: swimmer_natural_pg
+  epochs: 200
+  steps_per_epoch: 100000
+  max_ep_len: 1000
 env:
   type: mujoco
   id: Swimmer-v5
 method:
-  name: random
-  variant: uniform
+  name: natural_pg
 algo:
   estimator: paper_mc
   normalize_weights: false
   bootstrap_truncated_paths: false
+  max_kl: 0.01
+  npg_stepsize: 0.05
 model:
+  activation: tanh
   policy_hidden_sizes: [30]
   value_hidden_sizes: [30]
   init_log_std: -0.5

@@ -1,0 +1,22 @@
+inherits: ../base.yaml
+train:
+  run_name: walker_natural_pg
+  epochs: 200
+  steps_per_epoch: 1000000
+  max_ep_len: 1000
+env:
+  type: mujoco
+  id: Walker2d-v5
+method:
+  name: natural_pg
+algo:
+  estimator: paper_mc
+  normalize_weights: false
+  bootstrap_truncated_paths: false
+  max_kl: 0.01
+  npg_stepsize: 0.005
+model:
+  activation: tanh
+  policy_hidden_sizes: [50]
+  value_hidden_sizes: [50]
+  init_log_std: -0.5
