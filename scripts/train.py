@@ -3,11 +3,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import trpo_repro
 from trpo_repro.config import apply_overrides, load_config, save_config
 from trpo_repro.envs.factory import make_env
 from trpo_repro.runner import Runner
-from trpo_repro.utils.io import ensure_dir
-from trpo_repro.utils.seeding import set_seed
+from trpo_repro.utils.runtime import imported_package_path, prepare_run_dir, set_seed
 
 
 def parse_args():
@@ -16,6 +16,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
 
@@ -33,8 +34,20 @@ def main():
 
     run_name = str(cfg.train.get("run_name", Path(args.config).stem))
     output_dir = Path(args.output_dir) if args.output_dir else Path("outputs") / run_name / f"seed_{seed}"
-    ensure_dir(output_dir)
+    output_dir = prepare_run_dir(output_dir, overwrite=args.overwrite)
     save_config(cfg, output_dir / "config_resolved.yaml")
+
+    resolved_method = str(cfg.get("method", {}).get("name", "trpo"))
+    resolved_estimator = str(cfg.algo.get("estimator", cfg.algo.get("advantage_mode", "mc")))
+    print({
+        "package_path": imported_package_path("trpo_repro"),
+        "package_init": str(Path(trpo_repro.__file__).resolve()),
+        "config": str(Path(args.config).resolve()),
+        "output_dir": str(output_dir.resolve()),
+        "method": resolved_method,
+        "estimator": resolved_estimator,
+        "seed": seed,
+    })
 
     env = make_env(cfg, seed=seed)
     runner = Runner(env=env, cfg=cfg, output_dir=output_dir, device=args.device)

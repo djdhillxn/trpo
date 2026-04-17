@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import math
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
+from tqdm.auto import tqdm
 
 from trpo_repro.data.buffer import TrajectoryBuffer
 from trpo_repro.methods import make_method, resolve_method_name
-from trpo_repro.methods.base import MethodUpdateStats
-from trpo_repro.utils.io import ensure_dir, write_json
-from trpo_repro.utils.logger import JsonlLogger
+from trpo_repro.utils.runtime import JsonlLogger, ensure_dir, write_json
 from trpo_repro.utils.torch_utils import RunningMeanStd, to_tensor
 
 
@@ -21,7 +19,7 @@ class Runner:
         self.cfg = cfg
         self.output_dir = ensure_dir(output_dir)
         self.device = torch.device(device)
-        self.logger = JsonlLogger(self.output_dir)
+        self.logger = JsonlLogger(self.output_dir, mode="w")
         self.checkpoint_dir = ensure_dir(self.output_dir / "checkpoints")
 
         self.method_name = resolve_method_name(cfg)
@@ -51,6 +49,14 @@ class Runner:
             "trainable": self.trainable,
         }
         write_json(self.run_metadata, self.output_dir / "run_metadata.json")
+        print({
+            "runner_method": self.method_name,
+            "runner_variant": self.method_variant,
+            "runner_estimator": self.estimator,
+            "trainable": self.trainable,
+            "supports_checkpoints": self.supports_checkpoints,
+            "normalize_obs": self.normalize_obs,
+        })
 
     def _preprocess_obs(self, obs: np.ndarray) -> np.ndarray:
         obs = np.asarray(obs)
@@ -80,6 +86,15 @@ class Runner:
             normalize_weights=self.normalize_weights,
         )
 
+    def _validate_epoch_stats(self, stats) -> None:
+        if self.method_name == "random":
+            assert not self.trainable, "Random method should not be trainable."
+            assert float(stats.did_update) == 0.0, "Random method should never report an update."
+        elif self.method_name in {"natural_pg", "npg"}:
+            assert np.isnan(stats.line_search_success), "Natural PG should not report line search success."
+        elif self.method_name in {"trpo", "trpo_max_kl"}:
+            assert float(stats.line_search_success) in {0.0, 1.0}, "TRPO methods should report line search success."
+
     def train(self) -> None:
         obs, _ = self.env.reset()
         obs = self._preprocess_obs(obs)
@@ -93,10 +108,27 @@ class Runner:
         target_steps = int(self.cfg.train.steps_per_epoch)
         max_ep_len = int(self.cfg.train.get("max_ep_len", 1000))
 
-        for epoch in range(1, total_epochs + 1):
+        epoch_iter = tqdm(
+            range(1, total_epochs + 1),
+            desc="Training",
+            position=0,
+            leave=True,
+        )
+
+        for epoch in epoch_iter:
+        #for epoch in range(1, total_epochs + 1):
             start_time = time.time()
             steps_in_epoch = 0
             buffer = self._make_buffer(target_steps, max_ep_len) if self.trainable else None
+
+            pbar_total = target_steps if self.trainable and self.estimator != "paper_mc" else target_steps
+            rollout_pbar = tqdm(
+                total=pbar_total,
+                desc=f"Epoch {epoch}/{total_epochs}",
+                position=1,
+                leave=False,
+                dynamic_ncols=True,
+            )
 
             while True:
                 obs_tensor = to_tensor(obs[None, ...], self.device, dtype=torch.float32)
@@ -114,6 +146,15 @@ class Runner:
                 ep_len += 1
                 steps_in_epoch += 1
                 total_env_steps += 1
+
+                if steps_in_epoch <= target_steps:
+                    rollout_pbar.update(1)
+
+                rollout_pbar.set_postfix(
+                    ep_len=ep_len,
+                    ep_ret=f"{ep_ret:.2f}",
+                    env_steps=total_env_steps,
+                )
 
                 timeout = ep_len >= max_ep_len
                 terminal = terminated or truncated or timeout
@@ -135,7 +176,6 @@ class Runner:
                 obs = next_obs
                 if reached_target:
                     if not self.trainable or self.estimator == "paper_mc":
-                        # Continue until this trajectory terminates so the logged batch contains complete paths.
                         continue
 
                     last_val = 0.0
@@ -146,8 +186,11 @@ class Runner:
                     buffer.finish_path(last_val=last_val)
                     break
 
+            rollout_pbar.close()
+
             batch = buffer.get(self.device) if buffer is not None else None
             stats = self.method.update(batch)
+            self._validate_epoch_stats(stats)
             wall_time = time.time() - start_time
 
             train_return_mean = float(np.mean(episode_returns)) if episode_returns else float("nan")
@@ -171,7 +214,6 @@ class Runner:
                 "train_return_mean": train_return_mean,
                 "train_return_std": train_return_std,
                 "train_len_mean": train_len_mean,
-                # Backward-compatible aliases.
                 "ep_return_mean": train_return_mean,
                 "ep_return_std": train_return_std,
                 "ep_len_mean": train_len_mean,
@@ -179,7 +221,14 @@ class Runner:
                 "wall_time_sec": wall_time,
             }
             self.logger.log(record)
-            print(record)
+            #print(record)
+            epoch_iter.set_postfix(
+                method=self.method_name,
+                ret=f"{train_return_mean:.2f}" if np.isfinite(train_return_mean) else "nan",
+                kl=f"{record.get('approx_kl', float('nan')):.4f}" if np.isfinite(record.get("approx_kl", float("nan"))) else "nan",
+                steps=total_env_steps,
+            )
+            tqdm.write(str(record))
             episode_returns.clear()
             episode_lengths.clear()
 

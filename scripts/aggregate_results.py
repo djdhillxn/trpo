@@ -7,6 +7,24 @@ from typing import Iterable
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import yaml
+
+
+_METRIC_ALIASES: dict[str, list[str]] = {
+    "train_return_mean": ["ep_return_mean"],
+    "train_return_std": ["ep_return_std"],
+    "train_len_mean": ["ep_len_mean"],
+    "ep_return_mean": ["train_return_mean"],
+    "ep_return_std": ["train_return_std"],
+    "ep_len_mean": ["train_len_mean"],
+    "episodes_in_batch": ["episodes_in_epoch"],
+    "episodes_in_epoch": ["episodes_in_batch"],
+}
+
+_X_AXIS_ALIASES: dict[str, list[str]] = {
+    "iteration": ["epoch"],
+    "epoch": ["iteration"],
+}
 
 
 def parse_args():
@@ -18,12 +36,18 @@ def parse_args():
         required=True,
         help="Method root like outputs/cartpole_linear, or a specific seed dir. Repeat to compare methods.",
     )
-    parser.add_argument("--metric", type=str, default="train_return_mean")
-    parser.add_argument("--x-axis", type=str, default="iteration", choices=["iteration", "epoch", "env_steps"])
+    parser.add_argument("--metric", type=str, default="ep_return_mean")
+    parser.add_argument(
+        "--x-axis",
+        type=str,
+        default="epoch",
+        choices=["iteration", "epoch", "env_steps"],
+    )
     parser.add_argument("--save", type=str, default=None)
     parser.add_argument("--compare", action="store_true")
     parser.add_argument("--title", type=str, default=None)
     parser.add_argument("--labels", type=str, nargs="*", default=None)
+    parser.add_argument("--allow-legacy-runs", action="store_true")
     return parser.parse_args()
 
 
@@ -36,12 +60,17 @@ def _iter_seed_dirs(root: Path) -> Iterable[Path]:
             yield seed_dir
 
 
-def _read_metadata(seed_dir: Path) -> dict:
+def _read_metadata(seed_dir: Path, *, allow_legacy_runs: bool) -> tuple[dict, bool]:
     meta_path = seed_dir / "run_metadata.json"
     if meta_path.exists():
         with meta_path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    # Fallback for older runs.
+            return json.load(f), False
+    if not allow_legacy_runs:
+        raise FileNotFoundError(
+            f"Legacy run directory detected at {seed_dir} (missing run_metadata.json). "
+            "Re-run the experiment or pass --allow-legacy-runs."
+        )
+    print(f"Warning: legacy run directory without run_metadata.json: {seed_dir}")
     return {
         "method": seed_dir.parent.name,
         "method_variant": "unknown",
@@ -49,7 +78,7 @@ def _read_metadata(seed_dir: Path) -> dict:
         "suite": "unknown",
         "seed": seed_dir.name,
         "run_name": seed_dir.parent.name,
-    }
+    }, True
 
 
 def _method_label(meta: dict) -> str:
@@ -60,21 +89,84 @@ def _method_label(meta: dict) -> str:
     return f"{method}:{variant}"
 
 
-def _aggregate_seed_frames(seed_dirs: list[Path], metric: str, x_axis: str) -> tuple[pd.DataFrame, dict]:
+def _alias_candidates(name: str, aliases: dict[str, list[str]]) -> list[str]:
+    candidates = [name, *aliases.get(name, [])]
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            ordered.append(candidate)
+    return ordered
+
+
+def _resolve_column_name(columns: Iterable[str], requested: str, aliases: dict[str, list[str]]) -> str | None:
+    available = set(columns)
+    for candidate in _alias_candidates(requested, aliases):
+        if candidate in available:
+            return candidate
+    return None
+
+
+def _missing_column_error(kind: str, requested: str, csv_path: Path, columns: Iterable[str], aliases: dict[str, list[str]]) -> str:
+    alias_candidates = [candidate for candidate in _alias_candidates(requested, aliases) if candidate != requested]
+    alias_note = f" Checked aliases: {', '.join(alias_candidates)}." if alias_candidates else ""
+    available = ", ".join(str(column) for column in columns)
+    return f"{kind} '{requested}' not found in {csv_path}.{alias_note} Available columns: {available}"
+
+
+def _load_steps_per_epoch(seed_dir: Path) -> int | None:
+    config_path = seed_dir / "config_resolved.yaml"
+    if not config_path.exists():
+        return None
+    try:
+        with config_path.open("r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+        train_cfg = config.get("train") or {}
+        steps_per_epoch = train_cfg.get("steps_per_epoch")
+        return None if steps_per_epoch is None else int(steps_per_epoch)
+    except (OSError, TypeError, ValueError, yaml.YAMLError):
+        return None
+
+
+def _prepare_seed_frame(seed_dir: Path, metric: str, x_axis: str) -> pd.DataFrame:
+    csv_path = seed_dir / "metrics.csv"
+    df = pd.read_csv(csv_path)
+
+    metric_col = _resolve_column_name(df.columns, metric, _METRIC_ALIASES)
+    if metric_col is None:
+        raise KeyError(_missing_column_error("Metric", metric, csv_path, df.columns, _METRIC_ALIASES))
+
+    x_col = _resolve_column_name(df.columns, x_axis, _X_AXIS_ALIASES)
+    if x_col is None and x_axis == "env_steps":
+        if "batch_env_steps" in df.columns:
+            df = df.copy()
+            df["env_steps"] = pd.to_numeric(df["batch_env_steps"], errors="coerce").cumsum()
+            x_col = "env_steps"
+        else:
+            epoch_col = _resolve_column_name(df.columns, "epoch", _X_AXIS_ALIASES)
+            steps_per_epoch = _load_steps_per_epoch(seed_dir)
+            if epoch_col is not None and steps_per_epoch is not None:
+                df = df.copy()
+                df["env_steps"] = pd.to_numeric(df[epoch_col], errors="coerce") * steps_per_epoch
+                x_col = "env_steps"
+
+    if x_col is None:
+        raise KeyError(_missing_column_error("x-axis", x_axis, csv_path, df.columns, _X_AXIS_ALIASES))
+
+    return df[[x_col, metric_col]].copy().rename(columns={x_col: x_axis, metric_col: metric})
+
+
+def _aggregate_seed_frames(seed_dirs: list[Path], metric: str, x_axis: str, *, allow_legacy_runs: bool) -> tuple[pd.DataFrame, dict]:
     frames = []
     first_meta = None
     for seed_dir in seed_dirs:
         csv_path = seed_dir / "metrics.csv"
         if not csv_path.exists():
             continue
-        df = pd.read_csv(csv_path)
-        if metric not in df.columns:
-            raise KeyError(f"Metric '{metric}' not found in {csv_path}")
-        if x_axis not in df.columns:
-            raise KeyError(f"x-axis '{x_axis}' not found in {csv_path}")
-        meta = _read_metadata(seed_dir)
+        meta, _legacy = _read_metadata(seed_dir, allow_legacy_runs=allow_legacy_runs)
         first_meta = first_meta or meta
-        df = df[[x_axis, metric]].copy()
+        df = _prepare_seed_frame(seed_dir, metric=metric, x_axis=x_axis)
         df["seed"] = str(meta.get("seed", seed_dir.name))
         frames.append(df)
 
@@ -105,7 +197,12 @@ def main():
         seed_dirs = list(_iter_seed_dirs(run_root))
         if not seed_dirs:
             raise FileNotFoundError(f"No seed directories with metrics found under {run_root}")
-        summary, meta = _aggregate_seed_frames(seed_dirs, metric=args.metric, x_axis=args.x_axis)
+        summary, meta = _aggregate_seed_frames(
+            seed_dirs,
+            metric=args.metric,
+            x_axis=args.x_axis,
+            allow_legacy_runs=args.allow_legacy_runs,
+        )
         label = args.labels[idx] if args.labels else _method_label(meta)
         summary["label"] = label
         summary["env_id"] = str(meta.get("env_id", "unknown"))
@@ -134,8 +231,7 @@ def main():
         stem = args.save if args.save else f"compare_{args.metric}_by_{args.x_axis}"
         out_png = Path(stem) if stem.endswith(".png") else out_dir / f"{Path(stem).name}.png"
         out_csv = out_dir / f"{Path(stem).stem}.csv"
-        combined = pd.concat(aggregate_frames, ignore_index=True)
-        combined.to_csv(out_csv, index=False)
+        pd.concat(aggregate_frames, ignore_index=True).to_csv(out_csv, index=False)
     else:
         run_root = run_roots[0]
         out_png = Path(args.save) if args.save else run_root / f"aggregate_{args.metric}_by_{args.x_axis}.png"
@@ -143,7 +239,6 @@ def main():
         aggregate_frames[0].to_csv(out_csv, index=False)
 
     plt.savefig(out_png, dpi=150)
-
     print(f"Saved aggregate CSV to: {out_csv}")
     print(f"Saved plot to: {out_png}")
 
