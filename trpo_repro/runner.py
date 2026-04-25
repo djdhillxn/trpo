@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import time
@@ -5,11 +6,10 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from tqdm.auto import tqdm
 
 from trpo_repro.data.buffer import TrajectoryBuffer
 from trpo_repro.methods import make_method, resolve_method_name
-from trpo_repro.utils.runtime import JsonlLogger, ensure_dir, write_json
+from trpo_repro.utils.utils import JsonlLogger, ensure_dir, get_tqdm, write_json
 from trpo_repro.utils.torch_utils import RunningMeanStd, to_tensor
 
 
@@ -21,6 +21,7 @@ class Runner:
         self.device = torch.device(device)
         self.logger = JsonlLogger(self.output_dir, mode="w")
         self.checkpoint_dir = ensure_dir(self.output_dir / "checkpoints")
+        self.buffer_dir = ensure_dir(self.output_dir / "_buffers")
 
         self.method_name = resolve_method_name(cfg)
         self.method = make_method(env.observation_space, env.action_space, cfg, self.device)
@@ -28,14 +29,34 @@ class Runner:
 
         self.estimator = getattr(self.method, "estimator", None)
         self.normalize_weights = bool(cfg.algo.get("normalize_weights", self.estimator != "paper_mc"))
-        self.bootstrap_truncated_paths = bool(
-            cfg.algo.get("bootstrap_truncated_paths", self.estimator != "paper_mc")
-        )
+        self.bootstrap_truncated_paths = bool(cfg.algo.get("bootstrap_truncated_paths", self.estimator != "paper_mc"))
         self.trainable = bool(getattr(self.method, "trainable", False))
         self.supports_checkpoints = bool(getattr(self.method, "supports_checkpoints", False))
 
         self.normalize_obs = bool(cfg.train.get("normalize_obs", False)) and len(env.observation_space.shape) == 1
         self.obs_rms = RunningMeanStd(shape=tuple(env.observation_space.shape)) if self.normalize_obs else None
+
+        self.memory_mode = str(cfg.train.get("memory_mode", "standard")).lower()
+        if self.memory_mode not in {"standard", "safe"}:
+            raise ValueError(f"Unsupported memory_mode: {self.memory_mode}")
+        configured_obs_storage = cfg.train.get("obs_storage", "auto")
+        self.obs_storage = str(configured_obs_storage).lower()
+        if self.obs_storage == "auto":
+            self.obs_storage = "memmap" if self.memory_mode == "safe" else "ram"
+        configured_chunk = cfg.algo.get("full_batch_chunk_size")
+        if configured_chunk is None:
+            self.full_batch_chunk_size = 2048 if self.memory_mode == "safe" else None
+        else:
+            configured_chunk = int(configured_chunk)
+            self.full_batch_chunk_size = configured_chunk if configured_chunk > 0 else None
+        if self.memory_mode == "safe" and self.trainable and self.estimator != "paper_mc":
+            raise ValueError("memory_mode=safe is only supported for paper_mc training in this repo.")
+        self.cfg.train.obs_storage = self.obs_storage
+        self.cfg.algo.full_batch_chunk_size = self.full_batch_chunk_size
+
+        tqdm_impl, resolved_progress_mode = get_tqdm(str(cfg.train.get("progress_mode", "auto")))
+        self.tqdm = tqdm_impl
+        self.progress_mode = resolved_progress_mode
 
         suite = str(cfg.env.get("type", "unknown")).lower()
         self.run_metadata = {
@@ -47,6 +68,10 @@ class Runner:
             "seed": int(cfg.train.seed),
             "run_name": str(cfg.train.get("run_name", self.output_dir.name)),
             "trainable": self.trainable,
+            "memory_mode": self.memory_mode,
+            "obs_storage": self.obs_storage,
+            "full_batch_chunk_size": self.full_batch_chunk_size,
+            "progress_mode": self.progress_mode,
         }
         write_json(self.run_metadata, self.output_dir / "run_metadata.json")
         print({
@@ -56,6 +81,10 @@ class Runner:
             "trainable": self.trainable,
             "supports_checkpoints": self.supports_checkpoints,
             "normalize_obs": self.normalize_obs,
+            "memory_mode": self.memory_mode,
+            "obs_storage": self.obs_storage,
+            "full_batch_chunk_size": self.full_batch_chunk_size,
+            "progress_mode": self.progress_mode,
         })
 
     def _preprocess_obs(self, obs: np.ndarray) -> np.ndarray:
@@ -65,7 +94,7 @@ class Runner:
             obs = self.obs_rms.normalize(obs)
         return obs.astype(np.float32)
 
-    def _make_buffer(self, target_steps: int, max_ep_len: int):
+    def _make_buffer(self, target_steps: int, max_ep_len: int, epoch: int):
         obs_shape = tuple(self.env.observation_space.shape)
         if hasattr(self.env.action_space, "n"):
             act_shape = ()
@@ -73,7 +102,6 @@ class Runner:
         else:
             act_shape = tuple(self.env.action_space.shape)
             act_dtype = np.float32
-
         buffer_size = target_steps + (max_ep_len if self.estimator == "paper_mc" else 0)
         return TrajectoryBuffer(
             obs_shape=obs_shape,
@@ -84,6 +112,9 @@ class Runner:
             estimator=self.estimator,
             act_dtype=act_dtype,
             normalize_weights=self.normalize_weights,
+            obs_storage=self.obs_storage,
+            storage_dir=self.buffer_dir,
+            storage_prefix=f"epoch_{epoch:04d}",
         )
 
     def _validate_epoch_stats(self, stats) -> None:
@@ -95,40 +126,56 @@ class Runner:
         elif self.method_name in {"trpo", "trpo_max_kl"}:
             assert float(stats.line_search_success) in {0.0, 1.0}, "TRPO methods should report line search success."
 
+    def _write_epoch_record(self, epoch_iter, record: dict, total_env_steps: int, train_return_mean: float) -> None:
+        if self.progress_mode in {"terminal", "notebook"}:
+            epoch_iter.set_postfix(
+                method=self.method_name,
+                ret=f"{train_return_mean:.2f}" if np.isfinite(train_return_mean) else "nan",
+                kl=(
+                    f"{record.get('approx_kl', float('nan')):.4f}"
+                    if np.isfinite(record.get("approx_kl", float("nan")))
+                    else "nan"
+                ),
+                steps=total_env_steps,
+            )
+        if self.progress_mode == "terminal":
+            self.tqdm.write(str(record))
+        else:
+            print(record)
+
     def train(self) -> None:
         obs, _ = self.env.reset()
         obs = self._preprocess_obs(obs)
         ep_ret = 0.0
         ep_len = 0
         episode_returns: list[float] = []
-        episode_lengths: list[int] = []
+        episode_lengths: list[float] = []
         total_env_steps = 0
 
         total_epochs = int(self.cfg.train.epochs)
         target_steps = int(self.cfg.train.steps_per_epoch)
         max_ep_len = int(self.cfg.train.get("max_ep_len", 1000))
 
-        epoch_iter = tqdm(
-            range(1, total_epochs + 1),
-            desc="Training",
-            position=0,
-            leave=True,
+        disable_progress = self.progress_mode == "off"
+        epoch_iter = self.tqdm(
+            range(1, total_epochs + 1), desc="Training", position=0, leave=True, disable=disable_progress
         )
 
         for epoch in epoch_iter:
-        #for epoch in range(1, total_epochs + 1):
             start_time = time.time()
             steps_in_epoch = 0
-            buffer = self._make_buffer(target_steps, max_ep_len) if self.trainable else None
+            buffer = self._make_buffer(target_steps, max_ep_len, epoch) if self.trainable else None
 
-            pbar_total = target_steps if self.trainable and self.estimator != "paper_mc" else target_steps
-            rollout_pbar = tqdm(
-                total=pbar_total,
-                desc=f"Epoch {epoch}/{total_epochs}",
-                position=1,
-                leave=False,
-                dynamic_ncols=True,
-            )
+            rollout_pbar = None
+            if self.progress_mode == "terminal":
+                rollout_pbar = self.tqdm(
+                    total=target_steps,
+                    desc=f"Epoch {epoch}/{total_epochs}",
+                    position=1,
+                    leave=False,
+                    dynamic_ncols=True,
+                    mininterval=0.5,
+                )
 
             while True:
                 obs_tensor = to_tensor(obs[None, ...], self.device, dtype=torch.float32)
@@ -147,14 +194,9 @@ class Runner:
                 steps_in_epoch += 1
                 total_env_steps += 1
 
-                if steps_in_epoch <= target_steps:
+                if rollout_pbar is not None and steps_in_epoch <= target_steps:
                     rollout_pbar.update(1)
-
-                rollout_pbar.set_postfix(
-                    ep_len=ep_len,
-                    ep_ret=f"{ep_ret:.2f}",
-                    env_steps=total_env_steps,
-                )
+                    rollout_pbar.set_postfix(ep_len=ep_len, ep_ret=f"{ep_ret:.2f}", env_steps=total_env_steps)
 
                 timeout = ep_len >= max_ep_len
                 terminal = terminated or truncated or timeout
@@ -177,7 +219,6 @@ class Runner:
                 if reached_target:
                     if not self.trainable or self.estimator == "paper_mc":
                         continue
-
                     last_val = 0.0
                     if self.bootstrap_truncated_paths:
                         next_obs_tensor = to_tensor(next_obs[None, ...], self.device, dtype=torch.float32)
@@ -186,10 +227,18 @@ class Runner:
                     buffer.finish_path(last_val=last_val)
                     break
 
-            rollout_pbar.close()
+            if rollout_pbar is not None:
+                rollout_pbar.close()
 
             batch = buffer.get(self.device) if buffer is not None else None
-            stats = self.method.update(batch)
+            del buffer
+            stats = None
+            try:
+                stats = self.method.update(batch)
+            finally:
+                if batch is not None and hasattr(batch, "cleanup"):
+                    batch.cleanup()
+            assert stats is not None
             self._validate_epoch_stats(stats)
             wall_time = time.time() - start_time
 
@@ -221,21 +270,12 @@ class Runner:
                 "wall_time_sec": wall_time,
             }
             self.logger.log(record)
-            #print(record)
-            epoch_iter.set_postfix(
-                method=self.method_name,
-                ret=f"{train_return_mean:.2f}" if np.isfinite(train_return_mean) else "nan",
-                kl=f"{record.get('approx_kl', float('nan')):.4f}" if np.isfinite(record.get("approx_kl", float("nan"))) else "nan",
-                steps=total_env_steps,
-            )
-            tqdm.write(str(record))
+            self._write_epoch_record(epoch_iter, record, total_env_steps, train_return_mean)
             episode_returns.clear()
             episode_lengths.clear()
 
-            save_every = int(self.cfg.train.get("save_interval", 10))
-            if self.supports_checkpoints and (epoch % save_every == 0 or epoch == total_epochs):
+            if self.supports_checkpoints and epoch % int(self.cfg.train.get("save_interval", 10)) == 0:
                 self.save_checkpoint(epoch)
-
         self.logger.close()
 
     def save_checkpoint(self, epoch: int) -> None:
@@ -243,9 +283,9 @@ class Runner:
             return
         ckpt = {
             "epoch": epoch,
-            "method": self.method_name,
-            "method_variant": self.method_variant,
             "state": self.method.state_dict(),
+            "method_name": self.method.name,
+            "method_variant": self.method.variant,
             "obs_rms_mean": None if self.obs_rms is None else self.obs_rms.mean,
             "obs_rms_var": None if self.obs_rms is None else self.obs_rms.var,
             "obs_rms_count": None if self.obs_rms is None else self.obs_rms.count,

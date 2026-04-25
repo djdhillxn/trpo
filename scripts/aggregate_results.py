@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import yaml
 
+from trpo_repro.utils.utils import ensure_dir, slugify
+
 
 _METRIC_ALIASES: dict[str, list[str]] = {
     "train_return_mean": ["ep_return_mean"],
@@ -29,20 +31,9 @@ _X_AXIS_ALIASES: dict[str, list[str]] = {
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--runs-root",
-        type=str,
-        action="append",
-        required=True,
-        help="Method root like outputs/cartpole_linear, or a specific seed dir. Repeat to compare methods.",
-    )
+    parser.add_argument("--runs-root", type=str, action="append", required=True, help="Method root like outputs/cartpole_linear, or a specific seed dir. Repeat to compare methods.")
     parser.add_argument("--metric", type=str, default="ep_return_mean")
-    parser.add_argument(
-        "--x-axis",
-        type=str,
-        default="epoch",
-        choices=["iteration", "epoch", "env_steps"],
-    )
+    parser.add_argument("--x-axis", type=str, default="epoch", choices=["iteration", "epoch", "env_steps"])
     parser.add_argument("--save", type=str, default=None)
     parser.add_argument("--compare", action="store_true")
     parser.add_argument("--title", type=str, default=None)
@@ -66,10 +57,7 @@ def _read_metadata(seed_dir: Path, *, allow_legacy_runs: bool) -> tuple[dict, bo
         with meta_path.open("r", encoding="utf-8") as f:
             return json.load(f), False
     if not allow_legacy_runs:
-        raise FileNotFoundError(
-            f"Legacy run directory detected at {seed_dir} (missing run_metadata.json). "
-            "Re-run the experiment or pass --allow-legacy-runs."
-        )
+        raise FileNotFoundError(f"Legacy run directory detected at {seed_dir} (missing run_metadata.json). Re-run the experiment or pass --allow-legacy-runs.")
     print(f"Warning: legacy run directory without run_metadata.json: {seed_dir}")
     return {
         "method": seed_dir.parent.name,
@@ -132,11 +120,9 @@ def _load_steps_per_epoch(seed_dir: Path) -> int | None:
 def _prepare_seed_frame(seed_dir: Path, metric: str, x_axis: str) -> pd.DataFrame:
     csv_path = seed_dir / "metrics.csv"
     df = pd.read_csv(csv_path)
-
     metric_col = _resolve_column_name(df.columns, metric, _METRIC_ALIASES)
     if metric_col is None:
         raise KeyError(_missing_column_error("Metric", metric, csv_path, df.columns, _METRIC_ALIASES))
-
     x_col = _resolve_column_name(df.columns, x_axis, _X_AXIS_ALIASES)
     if x_col is None and x_axis == "env_steps":
         if "batch_env_steps" in df.columns:
@@ -150,10 +136,8 @@ def _prepare_seed_frame(seed_dir: Path, metric: str, x_axis: str) -> pd.DataFram
                 df = df.copy()
                 df["env_steps"] = pd.to_numeric(df[epoch_col], errors="coerce") * steps_per_epoch
                 x_col = "env_steps"
-
     if x_col is None:
         raise KeyError(_missing_column_error("x-axis", x_axis, csv_path, df.columns, _X_AXIS_ALIASES))
-
     return df[[x_col, metric_col]].copy().rename(columns={x_col: x_axis, metric_col: metric})
 
 
@@ -169,10 +153,8 @@ def _aggregate_seed_frames(seed_dirs: list[Path], metric: str, x_axis: str, *, a
         df = _prepare_seed_frame(seed_dir, metric=metric, x_axis=x_axis)
         df["seed"] = str(meta.get("seed", seed_dir.name))
         frames.append(df)
-
     if not frames:
         raise FileNotFoundError("No metrics.csv files found for the requested runs.")
-
     full = pd.concat(frames, ignore_index=True)
     summary = (
         full.groupby(x_axis, as_index=False)[metric]
@@ -188,29 +170,30 @@ def main():
     run_roots = [Path(p) for p in args.runs_root]
     if args.labels is not None and len(args.labels) not in {0, len(run_roots)}:
         raise ValueError("--labels must be omitted or match the number of --runs-root entries.")
-
     compare = bool(args.compare or len(run_roots) > 1)
     aggregate_frames: list[pd.DataFrame] = []
-    plot_items: list[tuple[str, pd.DataFrame, Path]] = []
+    plot_items: list[tuple[str, pd.DataFrame, Path, dict]] = []
 
     for idx, run_root in enumerate(run_roots):
         seed_dirs = list(_iter_seed_dirs(run_root))
         if not seed_dirs:
             raise FileNotFoundError(f"No seed directories with metrics found under {run_root}")
-        summary, meta = _aggregate_seed_frames(
-            seed_dirs,
-            metric=args.metric,
-            x_axis=args.x_axis,
-            allow_legacy_runs=args.allow_legacy_runs,
-        )
+        summary, meta = _aggregate_seed_frames(seed_dirs, metric=args.metric, x_axis=args.x_axis, allow_legacy_runs=args.allow_legacy_runs)
         label = args.labels[idx] if args.labels else _method_label(meta)
         summary["label"] = label
         summary["env_id"] = str(meta.get("env_id", "unknown"))
         aggregate_frames.append(summary)
-        plot_items.append((label, summary, run_root))
+        plot_items.append((label, summary, run_root, meta))
+
+    common_env = None
+    if compare:
+        env_ids = {str(meta.get("env_id", "unknown")) for *_rest, meta in plot_items}
+        if len(env_ids) != 1:
+            raise ValueError(f"Comparison plots require all runs to be from the same environment. Found: {sorted(env_ids)}")
+        common_env = next(iter(env_ids))
 
     plt.figure(figsize=(8, 5))
-    for label, summary, _run_root in plot_items:
+    for label, summary, _run_root, _meta in plot_items:
         x = summary[args.x_axis]
         y = summary[f"{args.metric}_mean"]
         ystd = summary[f"{args.metric}_std"].fillna(0.0)
@@ -221,21 +204,25 @@ def main():
     plt.ylabel(args.metric)
     if compare:
         plt.legend()
-    default_title = "Method comparison" if compare else run_roots[0].name
+    default_title = f"{common_env} comparison" if compare else run_roots[0].name
     plt.title(args.title or default_title)
     plt.tight_layout()
 
     if compare:
-        out_dir = Path("outputs") / "comparisons"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        stem = args.save if args.save else f"compare_{args.metric}_by_{args.x_axis}"
-        out_png = Path(stem) if stem.endswith(".png") else out_dir / f"{Path(stem).name}.png"
-        out_csv = out_dir / f"{Path(stem).stem}.csv"
+        env_slug = slugify(common_env or "unknown_env")
+        labels_slug = "__".join(slugify(label) for label, *_ in plot_items)
+        out_dir = ensure_dir(Path("outputs") / "comparisons" / env_slug)
+        stem = Path(args.save).stem if args.save else f"{env_slug}__{labels_slug}__{slugify(args.metric)}__by_{slugify(args.x_axis)}"
+        out_png = Path(args.save) if args.save else out_dir / f"{stem}.png"
+        out_csv = out_dir / f"{stem}.csv"
         pd.concat(aggregate_frames, ignore_index=True).to_csv(out_csv, index=False)
     else:
         run_root = run_roots[0]
-        out_png = Path(args.save) if args.save else run_root / f"aggregate_{args.metric}_by_{args.x_axis}.png"
-        out_csv = run_root / f"aggregate_{args.metric}_by_{args.x_axis}.csv"
+        env_slug = slugify(str(plot_items[0][3].get("env_id", run_root.name)))
+        label_slug = slugify(plot_items[0][0])
+        stem = Path(args.save).stem if args.save else f"{env_slug}__{label_slug}__aggregate_{slugify(args.metric)}_by_{slugify(args.x_axis)}"
+        out_png = Path(args.save) if args.save else run_root / f"{stem}.png"
+        out_csv = run_root / f"{stem}.csv"
         aggregate_frames[0].to_csv(out_csv, index=False)
 
     plt.savefig(out_png, dpi=150)

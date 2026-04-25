@@ -7,7 +7,7 @@ import trpo_repro
 from trpo_repro.config import apply_overrides, load_config, save_config
 from trpo_repro.envs.factory import make_env
 from trpo_repro.runner import Runner
-from trpo_repro.utils.runtime import imported_package_path, prepare_run_dir, set_seed
+from trpo_repro.utils.utils import imported_package_path, prepare_run_dir, set_seed
 
 
 def parse_args():
@@ -17,6 +17,8 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--memory-mode", choices=["standard", "safe"], default=None)
+    parser.add_argument("--progress-mode", choices=["auto", "terminal", "notebook", "off"], default=None)
     return parser.parse_args()
 
 
@@ -26,6 +28,10 @@ def main():
     overrides = {}
     if args.seed is not None:
         overrides["train.seed"] = args.seed
+    if args.memory_mode is not None:
+        overrides["train.memory_mode"] = args.memory_mode
+    if args.progress_mode is not None:
+        overrides["train.progress_mode"] = args.progress_mode
     if overrides:
         cfg = apply_overrides(cfg, overrides)
 
