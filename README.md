@@ -6,6 +6,9 @@
 ```bash
 python3 scripts/train.py --config configs/mujoco/swimmer_single_path.yaml --overwrite
 python3 scripts/train.py --config configs/atari/seaquest_single_path.yaml --overwrite
+python3 scripts/train.py --config configs/mujoco/swimmer_ppo_clip.yaml --overwrite
+python3 scripts/train.py --config configs/atari/seaquest_ppo_clip.yaml --overwrite
+python3 scripts/train.py --config configs/atari/seaquest_ppo_clip.yaml --method ppo --method-variant kl_penalty --overwrite
 ```
 
 ### Override runtime behavior
@@ -17,6 +20,7 @@ python3 scripts/train.py --config configs/atari/seaquest_single_path.yaml --memo
 ### Aggregate one method over seeds
 ```bash
 python3 scripts/aggregate_results.py --runs-root outputs/swimmer_single_path --metric train_return_mean --x-axis iteration
+python3 scripts/aggregate_results.py --runs-root outputs/swimmer_single_path --metric train_return_mean --x-axis iteration --summary --smooth-window 5
 ```
 
 ### Compare several methods on the same environment
@@ -32,7 +36,7 @@ python3 scripts/aggregate_results.py \
 
 ## How to use this repo
 
-This repo is organized around paper-faithful **single-path TRPO** (`paper_mc`) first. The normal workflow is:
+This repo is organized around paper-faithful **single-path TRPO** (`paper_mc`) first, and also includes **PPO** as a separate method family. The normal workflow is:
 
 1. install the repo and dependencies
 2. run `train.py` for a config
@@ -105,6 +109,7 @@ outputs/comparisons/<env_slug>/
 - `paper_mc` remains the default paper-faithful estimator.
 - The Atari memory-safe path changes **storage and execution order**, not the TRPO objective.
 - For same-environment method comparison, `aggregate_results.py` now checks that all runs share the same `env_id`.
+- Aggregation supports optional smoothing (`--smooth-window`) and an optional final/best summary table (`--summary`).
 
 ## Repo layout
 
