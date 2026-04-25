@@ -1,0 +1,34 @@
+inherits: ../base.yaml
+train:
+  run_name: qbert_ppo_clip
+  epochs: 300
+  steps_per_epoch: 100000
+  max_ep_len: 10000
+  memory_mode: standard
+env:
+  type: atari
+  id: ALE/Qbert-v5
+method:
+  name: ppo
+  variant: clip
+algo:
+  gamma: 0.99
+  lam: 0.95
+  estimator: gae
+  normalize_weights: true
+  bootstrap_truncated_paths: true
+  ppo_clip_ratio: 0.1
+  ppo_update_epochs: 4
+  ppo_minibatch_size: 2048
+  ppo_eval_batch_size: 4096
+  ppo_target_kl: 0.01
+  ppo_pi_lr: 0.00025
+  ppo_vf_lr: 0.00025
+  ppo_vf_epochs: 4
+  ppo_entropy_coef: 0.01
+  ppo_max_grad_norm: 0.5
+model:
+  activation: relu
+  policy_hidden_sizes: []
+  value_hidden_sizes: []
+  cnn_fc_dim: 20

@@ -1,0 +1,7 @@
+inherits: seaquest_ppo_clip.yaml
+method:
+  name: ppo
+  variant: kl_penalty
+algo:
+  ppo_kl_coef: 1.0
+  ppo_adaptive_kl: true
