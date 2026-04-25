@@ -19,6 +19,8 @@ def parse_args():
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--memory-mode", choices=["standard", "safe"], default=None)
     parser.add_argument("--progress-mode", choices=["auto", "terminal", "notebook", "off"], default=None)
+    parser.add_argument("--obs-storage", "--obs_storage", dest="obs_storage", choices=["auto", "ram", "memmap"], default=None)
+    parser.add_argument("--full-batch-chunk-size", "--full_batch_chunk_size", dest="full_batch_chunk_size", type=int, default=None)
     return parser.parse_args()
 
 
@@ -32,6 +34,10 @@ def main():
         overrides["train.memory_mode"] = args.memory_mode
     if args.progress_mode is not None:
         overrides["train.progress_mode"] = args.progress_mode
+    if args.obs_storage is not None:
+        overrides["train.obs_storage"] = args.obs_storage
+    if args.full_batch_chunk_size is not None:
+        overrides["algo.full_batch_chunk_size"] = args.full_batch_chunk_size
     if overrides:
         cfg = apply_overrides(cfg, overrides)
 
