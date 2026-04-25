@@ -6,6 +6,9 @@ train:
   save_interval: 10
   run_name: trpo_run
   normalize_obs: false
+  memory_mode: standard
+  progress_mode: auto
+  obs_storage: auto
 
 env:
   type: mujoco
@@ -29,6 +32,7 @@ algo:
   backtrack_iters: 10
   fvp_kl_metric: average
   npg_stepsize: 0.05
+  full_batch_chunk_size: null
   vf_lr: 0.001
   vf_weight_decay: 0.0
   vf_iters: 40

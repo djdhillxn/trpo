@@ -1,5 +1,6 @@
 inherits: ../base.yaml
 train:
+  memory_mode: safe
   run_name: pong_random
   epochs: 500
   steps_per_epoch: 100000

@@ -1,5 +1,6 @@
 inherits: ../base.yaml
 train:
+  memory_mode: safe
   run_name: seaquest_single_path
   epochs: 500
   steps_per_epoch: 100000
