@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import csv
@@ -6,6 +5,7 @@ import json
 import random
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +62,31 @@ def imported_package_path(package_name: str) -> str:
     return str(Path(module.__file__).resolve())
 
 
+def find_git_root(start: str | Path | None = None) -> Path | None:
+    path = Path(start).resolve() if start is not None else Path.cwd().resolve()
+    for candidate in [path, *path.parents]:
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def get_git_commit_hash(start: str | Path | None = None) -> str | None:
+    git_root = find_git_root(start)
+    if git_root is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(git_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        commit = result.stdout.strip()
+        return commit or None
+    except Exception:
+        return None
+
+
 def prepare_run_dir(path: str | Path, *, overwrite: bool = False) -> Path:
     path = Path(path)
     if path.exists():
@@ -98,6 +123,7 @@ def detect_progress_mode(mode: str = "auto") -> str:
         pass
     try:
         from IPython import get_ipython
+
         shell = get_ipython()
         if shell is not None and shell.__class__.__name__ == "ZMQInteractiveShell":
             return "notebook"
