@@ -14,6 +14,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--method", type=str, default=None)
+    parser.add_argument("--method-variant", "--method_variant", dest="method_variant", type=str, default=None)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--overwrite", action="store_true")
@@ -21,6 +23,7 @@ def parse_args():
     parser.add_argument("--progress-mode", choices=["auto", "terminal", "notebook", "off"], default=None)
     parser.add_argument("--obs-storage", "--obs_storage", dest="obs_storage", choices=["auto", "ram", "memmap"], default=None)
     parser.add_argument("--full-batch-chunk-size", "--full_batch_chunk_size", dest="full_batch_chunk_size", type=int, default=None)
+    parser.add_argument("--fvp-subsample-fraction", "--fvp_subsample_fraction", dest="fvp_subsample_fraction", type=float, default=None)
     return parser.parse_args()
 
 
@@ -30,6 +33,10 @@ def main():
     overrides = {}
     if args.seed is not None:
         overrides["train.seed"] = args.seed
+    if args.method is not None:
+        overrides["method.name"] = args.method
+    if args.method_variant is not None:
+        overrides["method.variant"] = args.method_variant
     if args.memory_mode is not None:
         overrides["train.memory_mode"] = args.memory_mode
     if args.progress_mode is not None:
@@ -38,6 +45,8 @@ def main():
         overrides["train.obs_storage"] = args.obs_storage
     if args.full_batch_chunk_size is not None:
         overrides["algo.full_batch_chunk_size"] = args.full_batch_chunk_size
+    if args.fvp_subsample_fraction is not None:
+        overrides["algo.fvp_subsample_fraction"] = args.fvp_subsample_fraction
     if overrides:
         cfg = apply_overrides(cfg, overrides)
 
