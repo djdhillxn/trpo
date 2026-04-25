@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 from torch import nn
 
@@ -89,6 +90,37 @@ class TRPOAgent:
         configured = int(configured)
         return configured if configured > 0 else None
 
+    def _fvp_subsample_fraction(self) -> float | None:
+        configured = self.cfg.algo.get("fvp_subsample_fraction")
+        if configured is None:
+            return None
+        configured = float(configured)
+        if configured <= 0.0:
+            return None
+        if configured > 1.0:
+            if configured <= 100.0:
+                configured = configured / 100.0
+            else:
+                raise ValueError("fvp_subsample_fraction must be in (0, 1] or a percentage in (0, 100].")
+        return configured
+
+    def _maybe_subsample_obs(self, obs):
+        fraction = self._fvp_subsample_fraction()
+        if fraction is None:
+            return obs
+        n = len(obs)
+        if n <= 1:
+            return obs
+        sample_n = max(1, int(np.ceil(n * fraction)))
+        if sample_n >= n:
+            return obs
+        if isinstance(obs, torch.Tensor):
+            index = torch.randperm(n, device=obs.device)[:sample_n]
+            return obs.index_select(0, index)
+        index = np.random.choice(n, size=sample_n, replace=False)
+        index.sort()
+        return obs[index]
+
     def _update_standard(self, obs, act, ret, weight, old_logp) -> TRPOStats:
         with torch.no_grad():
             old_dist = self.policy.distribution(obs)
@@ -103,10 +135,13 @@ class TRPOAgent:
         surr = self._surrogate(obs, act, weight, old_logp)
         grads = torch.autograd.grad(surr, self.policy.parameters())
         g = flat_grad(grads).detach()
+        fvp_obs = self._maybe_subsample_obs(obs)
+        with torch.no_grad():
+            fvp_old_dist = self.policy.distribution(fvp_obs)
 
         def fvp(v: torch.Tensor) -> torch.Tensor:
-            new_dist = self.policy.distribution(obs)
-            kl = self._kl_metric(old_dist, new_dist, metric=self.fvp_kl_metric)
+            new_dist = self.policy.distribution(fvp_obs)
+            kl = self._kl_metric(fvp_old_dist, new_dist, metric=self.fvp_kl_metric)
             grad_kl = torch.autograd.grad(kl, self.policy.parameters(), create_graph=True)
             flat_grad_kl = flat_grad(grad_kl)
             kl_v = (flat_grad_kl * v).sum()
@@ -121,7 +156,7 @@ class TRPOAgent:
             residual_tol=float(self.cfg.algo.get("cg_residual_tol", 1e-10)),
         )
         if self.update_mode == "trpo":
-            new_params, success, approx_kl = self._apply_trpo_step(obs, act, weight, old_logp, old_dist, old_surr, g, step_dir)
+            new_params, success, approx_kl = self._apply_trpo_step(obs, act, weight, old_logp, old_dist, old_surr, g, step_dir, fvp_obs, fvp_old_dist)
         elif self.update_mode == "npg":
             new_params, success, approx_kl = self._apply_npg_step(obs, old_dist, step_dir)
         else:
@@ -140,9 +175,10 @@ class TRPOAgent:
         old_surr = self._surrogate_chunked(old_policy, obs, act, weight, old_logp, chunk_size)
         entropy = self._entropy_chunked(old_policy, obs, chunk_size)
         g = self._policy_grad_chunked(obs, act, weight, old_logp, chunk_size)
+        fvp_obs = self._maybe_subsample_obs(obs)
 
         def fvp(v: torch.Tensor) -> torch.Tensor:
-            return self._fvp_chunked(old_policy, obs, v, chunk_size)
+            return self._fvp_chunked(old_policy, fvp_obs, v, chunk_size)
 
         step_dir = conjugate_gradient(
             fvp,
@@ -152,7 +188,7 @@ class TRPOAgent:
         )
 
         if self.update_mode == "trpo":
-            new_params, success, approx_kl = self._apply_trpo_step_chunked(obs, act, weight, old_logp, old_policy, old_surr, g, step_dir, chunk_size)
+            new_params, success, approx_kl = self._apply_trpo_step_chunked(obs, act, weight, old_logp, old_policy, old_surr, g, step_dir, chunk_size, fvp_obs)
         elif self.update_mode == "npg":
             new_params, success, approx_kl = self._apply_npg_step_chunked(obs, old_policy, step_dir, chunk_size)
         else:
@@ -161,8 +197,8 @@ class TRPOAgent:
         policy_loss_after = self._surrogate_chunked(self.policy, obs, act, weight, old_logp, chunk_size)
         return TRPOStats(old_surr, policy_loss_after, float("nan"), float("nan"), entropy, approx_kl, success, step_dir.norm().item())
 
-    def _apply_trpo_step(self, obs, act, weight, old_logp, old_dist, old_surr, gradient, step_dir):
-        shs = 0.5 * (step_dir * self._fvp_on_batch(obs, old_dist, step_dir)).sum()
+    def _apply_trpo_step(self, obs, act, weight, old_logp, old_dist, old_surr, gradient, step_dir, fvp_obs, fvp_old_dist):
+        shs = 0.5 * (step_dir * self._fvp_on_batch(fvp_obs, fvp_old_dist, step_dir)).sum()
         scale = torch.sqrt(torch.tensor(float(self.cfg.algo.max_kl), device=self.device) / (shs + 1e-8))
         full_step = step_dir * scale
         expected_improve = (gradient * full_step).sum().item()
@@ -189,8 +225,8 @@ class TRPOAgent:
             new_params = old_params
         return new_params, success, approx_kl
 
-    def _apply_trpo_step_chunked(self, obs, act, weight, old_logp, old_policy, old_surr, gradient, step_dir, chunk_size):
-        shs = 0.5 * (step_dir * self._fvp_chunked(old_policy, obs, step_dir, chunk_size)).sum()
+    def _apply_trpo_step_chunked(self, obs, act, weight, old_logp, old_policy, old_surr, gradient, step_dir, chunk_size, fvp_obs):
+        shs = 0.5 * (step_dir * self._fvp_chunked(old_policy, fvp_obs, step_dir, chunk_size)).sum()
         scale = torch.sqrt(torch.tensor(float(self.cfg.algo.max_kl), device=self.device) / (shs + 1e-8))
         full_step = step_dir * scale
         expected_improve = (gradient * full_step).sum().item()

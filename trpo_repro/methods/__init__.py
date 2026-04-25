@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+from trpo_repro.methods.ppo_method import PPOMethod
 from trpo_repro.methods.random_policy import RandomPolicyMethod
 from trpo_repro.methods.trpo_method import NaturalPolicyGradientMethod, TRPOMaxKLMethod, TRPOMethod
 
@@ -11,6 +12,7 @@ _METHODS = {
     "natural_pg": NaturalPolicyGradientMethod,
     "npg": NaturalPolicyGradientMethod,
     "trpo_max_kl": TRPOMaxKLMethod,
+    "ppo": PPOMethod,
     "random": RandomPolicyMethod,
 }
 

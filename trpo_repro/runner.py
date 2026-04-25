@@ -9,7 +9,7 @@ import torch
 
 from trpo_repro.data.buffer import TrajectoryBuffer
 from trpo_repro.methods import make_method, resolve_method_name
-from trpo_repro.utils.utils import JsonlLogger, ensure_dir, get_tqdm, write_json
+from trpo_repro.utils.utils import JsonlLogger, ensure_dir, get_git_commit_hash, get_tqdm, write_json
 from trpo_repro.utils.torch_utils import RunningMeanStd, to_tensor
 
 
@@ -45,20 +45,36 @@ class Runner:
             self.obs_storage = "memmap" if self.memory_mode == "safe" else "ram"
         configured_chunk = cfg.algo.get("full_batch_chunk_size")
         if configured_chunk is None:
-            self.full_batch_chunk_size = 2048 if self.memory_mode == "safe" else None
+            self.full_batch_chunk_size = 2048 if self.memory_mode == "safe" and self.estimator == "paper_mc" else None
         else:
             configured_chunk = int(configured_chunk)
             self.full_batch_chunk_size = configured_chunk if configured_chunk > 0 else None
-        if self.memory_mode == "safe" and self.trainable and self.estimator != "paper_mc":
-            raise ValueError("memory_mode=safe is only supported for paper_mc training in this repo.")
+        configured_fvp_fraction = cfg.algo.get("fvp_subsample_fraction")
+        if configured_fvp_fraction is None:
+            self.fvp_subsample_fraction = None
+        else:
+            configured_fvp_fraction = float(configured_fvp_fraction)
+            if configured_fvp_fraction <= 0.0:
+                raise ValueError("fvp_subsample_fraction must be positive when provided.")
+            if configured_fvp_fraction > 1.0:
+                if configured_fvp_fraction <= 100.0:
+                    configured_fvp_fraction = configured_fvp_fraction / 100.0
+                else:
+                    raise ValueError("fvp_subsample_fraction must be in (0, 1] or a percentage in (0, 100].")
+            self.fvp_subsample_fraction = configured_fvp_fraction
+        if self.memory_mode == "safe" and self.trainable and self.estimator != "paper_mc" and self.method_name != "ppo":
+            raise ValueError("memory_mode=safe is only supported for paper_mc TRPO/NPG and PPO training in this repo.")
         self.cfg.train.obs_storage = self.obs_storage
         self.cfg.algo.full_batch_chunk_size = self.full_batch_chunk_size
+        self.cfg.algo.fvp_subsample_fraction = self.fvp_subsample_fraction
 
         tqdm_impl, resolved_progress_mode = get_tqdm(str(cfg.train.get("progress_mode", "auto")))
         self.tqdm = tqdm_impl
         self.progress_mode = resolved_progress_mode
 
         suite = str(cfg.env.get("type", "unknown")).lower()
+        self.git_commit_hash = get_git_commit_hash(Path(__file__).resolve())
+
         self.run_metadata = {
             "method": self.method_name,
             "method_variant": self.method_variant,
@@ -71,7 +87,9 @@ class Runner:
             "memory_mode": self.memory_mode,
             "obs_storage": self.obs_storage,
             "full_batch_chunk_size": self.full_batch_chunk_size,
+            "fvp_subsample_fraction": self.fvp_subsample_fraction,
             "progress_mode": self.progress_mode,
+            "git_commit_hash": self.git_commit_hash,
         }
         write_json(self.run_metadata, self.output_dir / "run_metadata.json")
         print({
@@ -84,7 +102,9 @@ class Runner:
             "memory_mode": self.memory_mode,
             "obs_storage": self.obs_storage,
             "full_batch_chunk_size": self.full_batch_chunk_size,
+            "fvp_subsample_fraction": self.fvp_subsample_fraction,
             "progress_mode": self.progress_mode,
+            "git_commit_hash": self.git_commit_hash,
         })
 
     def _preprocess_obs(self, obs: np.ndarray) -> np.ndarray:
@@ -125,6 +145,8 @@ class Runner:
             assert np.isnan(stats.line_search_success), "Natural PG should not report line search success."
         elif self.method_name in {"trpo", "trpo_max_kl"}:
             assert float(stats.line_search_success) in {0.0, 1.0}, "TRPO methods should report line search success."
+        elif self.method_name == "ppo":
+            assert np.isnan(stats.line_search_success), "PPO should not report line search success."
 
     def _write_epoch_record(self, epoch_iter, record: dict, total_env_steps: int, train_return_mean: float) -> None:
         if self.progress_mode in {"terminal", "notebook"}:
@@ -161,8 +183,10 @@ class Runner:
             range(1, total_epochs + 1), desc="Training", position=0, leave=True, disable=disable_progress
         )
 
+        save_interval = int(self.cfg.train.get("save_interval", 10))
+
         for epoch in epoch_iter:
-            start_time = time.time()
+            epoch_start_time = time.time()
             steps_in_epoch = 0
             buffer = self._make_buffer(target_steps, max_ep_len, epoch) if self.trainable else None
 
@@ -177,6 +201,7 @@ class Runner:
                     mininterval=0.5,
                 )
 
+            collect_start_time = time.time()
             while True:
                 obs_tensor = to_tensor(obs[None, ...], self.device, dtype=torch.float32)
                 action_t, value_t, logp_t = self.method.act(obs_tensor, deterministic=False)
@@ -230,7 +255,9 @@ class Runner:
             if rollout_pbar is not None:
                 rollout_pbar.close()
 
-            batch = buffer.get(self.device) if buffer is not None else None
+            collect_time = time.time() - collect_start_time
+            update_start_time = time.time()
+            batch = buffer.get(self.device, obs_to_device=getattr(self.method, "batch_obs_to_device", True)) if buffer is not None else None
             del buffer
             stats = None
             try:
@@ -240,7 +267,15 @@ class Runner:
                     batch.cleanup()
             assert stats is not None
             self._validate_epoch_stats(stats)
-            wall_time = time.time() - start_time
+            update_time = time.time() - update_start_time
+
+            checkpoint_time = 0.0
+            if self.supports_checkpoints and epoch % save_interval == 0:
+                checkpoint_start_time = time.time()
+                self.save_checkpoint(epoch)
+                checkpoint_time = time.time() - checkpoint_start_time
+
+            wall_time = time.time() - epoch_start_time
 
             train_return_mean = float(np.mean(episode_returns)) if episode_returns else float("nan")
             train_return_std = float(np.std(episode_returns)) if episode_returns else float("nan")
@@ -267,6 +302,9 @@ class Runner:
                 "ep_return_std": train_return_std,
                 "ep_len_mean": train_len_mean,
                 **stats.to_log_dict(),
+                "collect_time_sec": collect_time,
+                "update_time_sec": update_time,
+                "checkpoint_time_sec": checkpoint_time,
                 "wall_time_sec": wall_time,
             }
             self.logger.log(record)
@@ -274,8 +312,6 @@ class Runner:
             episode_returns.clear()
             episode_lengths.clear()
 
-            if self.supports_checkpoints and epoch % int(self.cfg.train.get("save_interval", 10)) == 0:
-                self.save_checkpoint(epoch)
         self.logger.close()
 
     def save_checkpoint(self, epoch: int) -> None:

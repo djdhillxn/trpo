@@ -16,6 +16,10 @@ class MethodUpdateStats:
     approx_kl: float = float('nan')
     line_search_success: float = float('nan')
     cg_norm: float = float('nan')
+    clip_fraction: float = float('nan')
+    kl_coef: float = float('nan')
+    value_explained_variance_before: float = float('nan')
+    value_explained_variance_after: float = float('nan')
     did_update: float = 0.0
 
     def to_log_dict(self) -> dict[str, float]:
@@ -25,6 +29,7 @@ class MethodUpdateStats:
 class BaseMethod:
     trainable: bool = False
     supports_checkpoints: bool = False
+    batch_obs_to_device: bool = True
 
     def __init__(self, cfg, device: torch.device) -> None:
         self.cfg = cfg

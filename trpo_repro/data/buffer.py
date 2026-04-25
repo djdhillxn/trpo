@@ -113,7 +113,7 @@ class TrajectoryBuffer:
             raise ValueError(f"Unknown estimator mode: {self.estimator}")
         self.path_start_idx = self.ptr
 
-    def get(self, device: torch.device) -> RolloutBatch:
+    def get(self, device: torch.device, *, obs_to_device: bool = True) -> RolloutBatch:
         size = self.ptr
         if size <= 0:
             raise RuntimeError("Buffer is empty.")
@@ -125,7 +125,10 @@ class TrajectoryBuffer:
         weights_t = torch.as_tensor(weight_buf, dtype=torch.float32, device=device)
         cleanup_files: list[Path] = []
         if self.obs_storage == "ram":
-            obs_obj = torch.as_tensor(self.obs_buf[:size], dtype=torch.float32, device=device)
+            if obs_to_device:
+                obs_obj = torch.as_tensor(self.obs_buf[:size], dtype=torch.float32, device=device)
+            else:
+                obs_obj = self.obs_buf[:size]
         else:
             assert self._obs_path is not None
             self.obs_buf.flush()
