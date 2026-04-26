@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument("--full-batch-chunk-size", "--full_batch_chunk_size", dest="full_batch_chunk_size", type=int, default=None)
     parser.add_argument("--fvp-subsample-fraction", "--fvp_subsample_fraction", dest="fvp_subsample_fraction", type=float, default=None)
     parser.add_argument("--fvp-estimator", "--fvp_estimator", dest="fvp_estimator", choices=["analytic", "empirical"], default=None)
+    parser.add_argument("--npg-stepsize", "--npg_stepsize", dest="npg_stepsize", type=float, default=None)
     return parser.parse_args()
 
 
@@ -66,6 +67,8 @@ def main():
         overrides["algo.fvp_subsample_fraction"] = args.fvp_subsample_fraction
     if args.fvp_estimator is not None:
         overrides["algo.fvp_estimator"] = args.fvp_estimator
+    if args.npg_stepsize is not None:
+        overrides["algo.npg_stepsize"] = float(args.npg_stepsize)
     if overrides:
         cfg = apply_overrides(cfg, overrides)
 
@@ -89,6 +92,7 @@ def main():
         "seed": seed,
         "num_workers": int(cfg.train.get("num_workers", 1)),
         "fvp_estimator": str(cfg.algo.get("fvp_estimator", "analytic")),
+        "npg_stepsize": float(cfg.algo.get("npg_stepsize", 0.05)),
     })
 
     env = make_env(cfg, seed=seed)

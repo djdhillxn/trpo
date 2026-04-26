@@ -1,99 +1,104 @@
 # TRPO / PPO policy optimization experiments
 
-A research-oriented reinforcement learning repository built around **Trust Region Policy Optimization (TRPO)**, with additional support for **Natural Policy Gradient (NPG)**, **Proximal Policy Optimization (PPO)**, and a **random policy baseline**. The codebase is organized so you can run paper-faithful TRPO experiments, compare methods on the same environments, and aggregate results into publication/report-ready plots.
+A research-oriented reinforcement learning repository for **Trust Region Policy Optimization (TRPO)** and related policy-optimization methods. The codebase now supports:
+
+- **TRPO** (single-path / trust-region constrained)
+- **Natural Policy Gradient (NPG)**
+- **Empirical-FIM TRPO** (paper ablation / comparison path)
+- **PPO-Clip**
+- **PPO-KL-Penalty**
+- **Random policy baseline**
+- **Single-process or parallel rollout collection**
+- **Laptop-safe memory mode** for large Atari TRPO runs
+- **Colab-friendly workflows** and an included notebook
+
+This repo is designed for **paper-faithful TRPO study**, but it also includes the practical machinery needed to run larger comparative experiments on MuJoCo and Atari.
 
 ---
 
 ## Most important commands
 
-### 1) Train a run
+### Train a run
 
 ```bash
 # TRPO single-path / paper-faithful
-python3 scripts/train.py --config configs/mujoco/swimmer_single_path.yaml --overwrite
-python3 scripts/train.py --config configs/atari/seaquest_single_path.yaml --overwrite
+python3 scripts/train.py \
+  --config configs/mujoco/swimmer_single_path.yaml \
+  --overwrite
+
+python3 scripts/train.py \
+  --config configs/atari/seaquest_single_path.yaml \
+  --overwrite
 
 # PPO clipped surrogate
-python3 scripts/train.py --config configs/mujoco/swimmer_ppo_clip.yaml --overwrite
-python3 scripts/train.py --config configs/atari/seaquest_ppo_clip.yaml --overwrite
+python3 scripts/train.py \
+  --config configs/mujoco/swimmer_ppo_clip.yaml \
+  --overwrite
 
-# PPO KL-penalty variant via CLI override
 python3 scripts/train.py \
   --config configs/atari/seaquest_ppo_clip.yaml \
-  --method ppo \
-  --method-variant kl_penalty \
   --overwrite
 
-# Natural Policy Gradient
-python3 scripts/train.py --config configs/mujoco/swimmer_natural_pg.yaml --overwrite
-
-# Random baseline
-python3 scripts/train.py --config configs/mujoco/swimmer_random.yaml --overwrite
+# Empirical-FIM TRPO ablation
+python3 scripts/train.py \
+  --config configs/mujoco/swimmer_empirical_fim.yaml \
+  --overwrite
 ```
 
-### 2) Override runtime behavior from the command line
+### Common overrides
 
 ```bash
-# Memory-safe Atari mode (good for laptops / lower-memory machines)
+# Use CUDA, set workers, and change the training budget from the CLI
 python3 scripts/train.py \
   --config configs/atari/seaquest_single_path.yaml \
-  --memory-mode safe \
-  --progress-mode terminal \
-  --overwrite
-
-# Colab-friendly Atari run with CUDA and RAM-backed observation storage
-python3 scripts/train.py \
-  --config configs/atari/seaquest_single_path.yaml \
-  --memory-mode safe \
-  --obs_storage ram \
-  --full_batch_chunk_size 8192 \
-  --fvp_subsample_fraction 0.1 \
   --device cuda \
-  --progress-mode notebook \
-  --overwrite
-
-# Force the original full-memory / full-batch path
-python3 scripts/train.py \
-  --config configs/atari/seaquest_single_path.yaml \
-  --memory-mode standard \
-  --progress-mode notebook \
-  --overwrite
-
-# Parallel rollout collection on Linux / Colab
-python3 scripts/train.py \
-  --config configs/atari/seaquest_single_path.yaml \
   --num-workers 4 \
-  --memory-mode safe \
-  --obs_storage ram \
-  --full_batch_chunk_size 8192 \
-  --device cuda \
-  --progress-mode off \
+  --epochs 500 \
+  --steps-per-epoch 100000 \
+  --save-interval 25 \
+  --overwrite
+
+# Override the estimator mode directly
+python3 scripts/train.py \
+  --config configs/mujoco/cartpole_linear.yaml \
+  --estimator value_baseline \
+  --overwrite
+
+# Switch the Fisher / Hessian metric implementation
+python3 scripts/train.py \
+  --config configs/mujoco/swimmer_single_path.yaml \
+  --method empirical_fim \
+  --fvp-estimator empirical \
+  --fvp-subsample-fraction 0.1 \
   --overwrite
 ```
 
-### 3) Aggregate one method over seeds
+### Aggregate one method over seeds
 
 ```bash
 python3 scripts/aggregate_results.py \
   --runs-root outputs/swimmer_single_path \
   --metric train_return_mean \
-  --x-axis iteration
+  --x-axis iteration \
+  --summary
 ```
 
-### 4) Compare several methods on the same environment
+### Compare methods on the same environment
 
 ```bash
 python3 scripts/aggregate_results.py \
   --runs-root outputs/swimmer_single_path \
   --runs-root outputs/swimmer_natural_pg \
-  --runs-root outputs/swimmer_random \
+  --runs-root outputs/swimmer_empirical_fim \
   --runs-root outputs/swimmer_ppo_clip \
   --compare \
   --metric train_return_mean \
-  --x-axis iteration
+  --x-axis iteration \
+  --smooth-window 5 \
+  --summary
 ```
 
-### 5) Evaluate a saved checkpoint
+### Evaluate a saved checkpoint
 
 ```bash
 python3 scripts/evaluate.py \
@@ -105,42 +110,80 @@ python3 scripts/evaluate.py \
 
 ---
 
-## Colab helper notebook
+## Quick start mental model
 
-A step-by-step Colab usage notebook is included here:
+Think about the repo in four layers:
 
-- `notebooks/colab_quickstart.ipynb`
-
-It shows how to:
-- mount Google Drive
-- copy the repo from Drive to `/content/trpo`
-- install dependencies in the Colab runtime
-- verify CUDA
-- run locomotion and Atari jobs
-- store outputs on local SSD during execution
-- copy results back to Google Drive
-
-If you only want the shortest Colab workflow, the notebook is the quickest reference.
-
----
-
-## Quick usage model
-
-The repository is easiest to think about in four layers:
-
-1. **Config**: choose a YAML config under `configs/`
-2. **Method**: TRPO / NPG / PPO / random
-3. **Runtime mode**: memory mode, progress mode, device, chunk size, number of rollout workers, etc.
-4. **Analysis**: aggregate seed runs, compare methods, export plots and CSV summaries
+1. **Config**: choose a YAML file in `configs/`
+2. **Method**: TRPO / NPG / empirical-FIM / PPO / random
+3. **Runtime mode**: workers, device, safe-vs-standard memory, progress bars, FVP settings
+4. **Analysis**: aggregate, smooth, summarize, compare
 
 Typical workflow:
 
 1. install dependencies
-2. choose a config
-3. train runs into `outputs/<run_name>/seed_<k>/`
-4. aggregate over seeds for one method
+2. pick a config
+3. run one or more seeds into `outputs/<run_name>/seed_<k>/`
+4. aggregate one method over seeds
 5. compare methods on the same environment
-6. optionally evaluate a saved checkpoint
+6. optionally evaluate checkpoints
+
+---
+
+## Colab quickstart
+
+A reference notebook is included here:
+
+- `notebooks/colab_quickstart.ipynb`
+
+It shows how to:
+
+- mount Google Drive
+- copy the repo from Drive to `/content/trpo`
+- install dependencies inside the Colab runtime
+- verify CUDA
+- run MuJoCo and Atari jobs
+- store intermediate outputs on Colab SSD instead of Drive
+- copy finished outputs back to Drive
+
+### Minimal Colab SSD workflow
+
+```bash
+rm -rf /content/trpo
+cp -r "/content/drive/MyDrive/Colab Notebooks/839/trpo" /content/trpo
+cd /content/trpo
+```
+
+Then run jobs from `/content/trpo` and store outputs on `/content/trpo_runs/...`.
+
+### Example: Atari TRPO on Colab with parallel rollouts and CUDA
+
+```bash
+python3 scripts/train.py \
+  --config configs/atari/seaquest_single_path.yaml \
+  --num-workers 4 \
+  --memory-mode safe \
+  --obs-storage ram \
+  --full-batch-chunk-size 8192 \
+  --fvp-subsample-fraction 0.1 \
+  --device cuda \
+  --progress-mode off \
+  --output-dir /content/trpo_runs/seaquest_single_path/seed_0 \
+  --overwrite
+```
+
+### Example: Atari PPO on Colab with parallel rollouts and CUDA
+
+```bash
+python3 scripts/train.py \
+  --config configs/atari/seaquest_ppo_clip.yaml \
+  --num-workers 4 \
+  --memory-mode standard \
+  --device cuda \
+  --progress-mode notebook \
+  --output-dir /content/trpo_runs/seaquest_ppo_clip/seed_0 \
+  --overwrite
+```
 
 ---
 
@@ -151,20 +194,18 @@ python3 -m pip install -r requirements.txt
 python3 -m pip install -e .
 ```
 
-The editable install is strongly recommended so that `scripts/train.py` always imports the code from the current repo instead of an older installed package.
+The editable install is strongly recommended so that `scripts/train.py` always imports the code from the current working tree.
 
 ---
 
 ## Atari setup
-
-### Install ALE + ROMs
 
 ```bash
 python3 -m pip install --upgrade ale-py "autorom[accept-rom-license]"
 AutoROM --accept-license
 ```
 
-### Quick verification
+Quick verification:
 
 ```bash
 python3 - <<'PY'
@@ -183,426 +224,280 @@ PY
 
 ## Methods and variants
 
-### Methods you can pass via `--method`
+### Method names
 
-| Method name | What it is | Main use in this repo | Typical config examples |
-|---|---|---|---|
-| `trpo` | Trust Region Policy Optimization | Main theory-heavy method, especially single-path TRPO | `configs/mujoco/swimmer_single_path.yaml`, `configs/atari/seaquest_single_path.yaml` |
-| `natural_pg` / `npg` | Natural Policy Gradient | Locomotion comparison baseline | `configs/mujoco/swimmer_natural_pg.yaml` |
-| `trpo_max_kl` | Max-KL TRPO variant | Small-scale comparison / ablation | `configs/mujoco/cartpole_trpo_max_kl.yaml` |
-| `ppo` | Proximal Policy Optimization | Practical first-order comparison method | `configs/mujoco/swimmer_ppo_clip.yaml`, `configs/atari/seaquest_ppo_clip.yaml` |
-| `random` | Random policy baseline | Sanity baseline / plotting baseline | `configs/mujoco/swimmer_random.yaml`, `configs/atari/pong_random.yaml` |
+| Method name | Meaning | Typical use |
+|---|---|---|
+| `trpo` | Trust Region Policy Optimization with analytic KL-Hessian / Fisher-vector products | main theory-heavy method |
+| `natural_pg` / `npg` | natural policy gradient with the same surrogate geometry but no line search | locomotion comparison baseline |
+| `trpo_max_kl` | TRPO variant using max-KL acceptance logic | small-scale ablation / sanity check |
+| `empirical_fim` | TRPO-style update using the empirical covariance of score gradients for the metric | paper-linked empirical-FIM ablation (use `memory_mode standard`) |
+| `ppo` | proximal policy optimization | practical first-order comparison |
+| `random` | random policy baseline | sanity / baseline curve |
 
-### Method variants
+### PPO variants
 
-| Method | Variant control | Supported values | Meaning |
-|---|---|---|---|
-| `trpo` | usually determined by estimator | `paper_mc`, `mc_baseline`, `gae` | chooses how returns/advantages are formed |
-| `natural_pg` | same estimator logic as TRPO family | `paper_mc`, `mc_baseline`, `gae` | same surrogate / Fisher geometry, different update rule |
-| `trpo_max_kl` | fixed method | `paper_mc` recommended | uses max-KL acceptance logic (small-scale / special use) |
-| `ppo` | `--method-variant` or config `method.variant` | `clip`, `kl_penalty` | clipped PPO surrogate or KL-penalty PPO |
-| `random` | none | `default` | no learning, just rollout/evaluation |
+| Method | `method.variant` | Meaning |
+|---|---|---|
+| `ppo` | `clip` | clipped-ratio PPO surrogate |
+| `ppo` | `kl_penalty` | KL-penalty PPO surrogate |
 
-### Estimator modes
+### Estimator names (public names)
 
-These live in `algo.estimator` and matter mainly for the trainable policy-gradient methods.
+The repo now uses clearer public estimator names.
 
-| Estimator | Meaning | Uses value function? | Best use |
-|---|---|---|---|
-| `paper_mc` | paper-faithful Monte Carlo returns / Q-estimates for single-path TRPO | No | faithful TRPO single-path reproduction |
-| `mc_baseline` | Monte Carlo returns with learned value baseline | Yes | lower-variance actor-critic style experiments |
-| `gae` | Generalized Advantage Estimation | Yes | PPO and modernized actor-critic training |
+| Public name | Meaning | Old aliases still accepted |
+|---|---|---|
+| `trpo_paper` | paper-faithful Monte Carlo returns / trajectory Q-estimates with no learned value baseline | `paper_mc`, `paper_returns`, `paper` |
+| `value_baseline` | Monte Carlo returns with a learned value baseline subtracted from the policy-training weights | `mc_baseline`, `mc_value_baseline`, `returns_value_baseline`, `mc` |
+| `gae` | generalized advantage estimation | `gae` |
 
-### Where these live in code
+### Which estimator should I use?
+
+| Estimator | Best use | Uses learned value function? |
+|---|---|---|
+| `trpo_paper` | paper-faithful single-path TRPO / NPG experiments | No |
+| `value_baseline` | lower-variance actor-critic style TRPO/NPG experiments | Yes |
+| `gae` | PPO and modernized actor-critic training | Yes |
+
+---
+
+## Runtime controls
+
+### Memory mode
+
+| `train.memory_mode` | Meaning | When to use |
+|---|---|---|
+| `standard` | original full-RAM / full-batch path | MuJoCo, PPO, or large-memory machines |
+| `safe` | memory-safe path using chunked second-order computations | large Atari TRPO / NPG runs, laptops, constrained Colab runs |
+
+### Observation storage
+
+| `train.obs_storage` | Meaning |
+|---|---|
+| `auto` | choose `memmap` in safe mode, `ram` in standard mode |
+| `ram` | keep rollout observations in memory |
+| `memmap` | keep rollout observations in disk-backed memory maps |
+
+### Progress mode
+
+| `train.progress_mode` | Meaning |
+|---|---|
+| `auto` | choose terminal vs notebook tqdm automatically |
+| `terminal` | shell-friendly tqdm |
+| `notebook` | Colab / Jupyter-friendly tqdm |
+| `off` | disable progress bars |
+
+### FVP / Fisher controls
+
+| Setting | Meaning |
+|---|---|
+| `algo.full_batch_chunk_size` | chunk size for safe-mode TRPO full-batch computations |
+| `algo.fvp_subsample_fraction` | fraction of the batch used for the Fisher-vector-product metric |
+| `algo.fvp_estimator` | `analytic` or `empirical` |
+| `algo.empirical_fim_batch_size` | micro-batch size used when computing empirical-FIM score-gradient products |
+
+### PPO scheduling controls
+
+| Setting | Meaning |
+|---|---|
+| `algo.ppo_anneal_lr` | linearly anneal PPO learning rates to zero over training |
+| `algo.ppo_anneal_clip_ratio` | linearly anneal PPO clip ratio to zero over training |
+
+The Atari PPO configs enable both annealing options by default, following the spirit of the PPO paper’s Atari schedule.
+
+---
+
+## Parallel rollout collection
+
+Parallel rollout collection is **optional** and only turns on when `num_workers > 1`.
+
+### Important notes
+
+- default remains **single-process** collection
+- intended for **Linux / Colab**
+- not supported on macOS in this repo
+- current parallel path expects:
+  - `normalize_obs: false`
+  - `obs_storage: ram`
+
+### Good starting points
+
+| Scenario | Suggested settings |
+|---|---|
+| MuJoCo TRPO / NPG on Colab | `--num-workers 12 --device cuda` |
+| Atari TRPO on Colab | `--num-workers 4 --memory-mode safe --obs-storage ram --full-batch-chunk-size 8192 --device cuda` |
+| Atari PPO on Colab | `--num-workers 4 --memory-mode standard --device cuda` |
+
+---
+
+## High-value CLI overrides
+
+These are the ones you will most often care about:
+
+```bash
+python3 scripts/train.py \
+  --config ... \
+  --method trpo \
+  --method-variant clip \
+  --estimator trpo_paper \
+  --epochs 500 \
+  --steps-per-epoch 100000 \
+  --save-interval 25 \
+  --num-workers 4 \
+  --memory-mode safe \
+  --obs-storage ram \
+  --full-batch-chunk-size 8192 \
+  --fvp-subsample-fraction 0.1 \
+  --fvp-estimator analytic \
+  --device cuda \
+  --progress-mode off \
+  --overwrite
+```
+
+A full CLI flag reference is in:
+
+- [`docs/cli_reference.md`](docs/cli_reference.md)
+
+---
+
+## Output structure and logged metrics
+
+Each run typically writes to:
+
+```text
+outputs/<run_name>/seed_<k>/
+```
+
+Important files:
+
+| File | Meaning |
+|---|---|
+| `config_resolved.yaml` | fully resolved config after inheritance and CLI overrides |
+| `run_metadata.json` | high-level run metadata including commit hash |
+| `metrics.jsonl` | one JSON record per epoch / iteration |
+| `checkpoints/` | saved method checkpoints |
+| `_buffers/` | temporary memmap rollout storage (when used) |
+
+### Important metrics
+
+| Metric | Meaning |
+|---|---|
+| `train_return_mean` | mean raw episodic return collected in that epoch |
+| `train_return_std` | std. dev. of raw episodic return collected in that epoch |
+| `ep_len_mean` | mean episode length in that epoch |
+| `approx_kl` | approximate KL change after the policy update |
+| `clip_fraction` | PPO fraction of ratios outside the clip band |
+| `value_explained_variance_after` | PPO critic explained variance after the update |
+| `collect_time_sec` | rollout-collection wall time |
+| `update_time_sec` | optimization/update wall time |
+| `checkpoint_time_sec` | checkpoint save wall time |
+| `wall_time_sec` | total epoch wall time |
+
+These are **raw environment returns / scores**, not extra normalized reward metrics. That is aligned with how the TRPO and PPO papers report their benchmark results.
+
+---
+
+## Aggregation and comparison
+
+### One method over seeds
+
+```bash
+python3 scripts/aggregate_results.py \
+  --runs-root outputs/walker2d_single_path \
+  --metric train_return_mean \
+  --x-axis iteration \
+  --summary
+```
+
+### Compare multiple methods on one environment
+
+```bash
+python3 scripts/aggregate_results.py \
+  --runs-root outputs/walker2d_single_path \
+  --runs-root outputs/walker2d_natural_pg \
+  --runs-root outputs/walker2d_empirical_fim \
+  --runs-root outputs/walker2d_ppo_clip \
+  --compare \
+  --metric train_return_mean \
+  --x-axis iteration \
+  --smooth-window 5 \
+  --summary
+```
+
+Comparison mode checks that all supplied runs come from the **same environment**.
+
+---
+
+## Config inventory
+
+### MuJoCo / locomotion examples
+
+- `configs/mujoco/swimmer_single_path.yaml`
+- `configs/mujoco/hopper_single_path.yaml`
+- `configs/mujoco/walker2d_single_path.yaml`
+- `configs/mujoco/swimmer_natural_pg.yaml`
+- `configs/mujoco/hopper_natural_pg.yaml`
+- `configs/mujoco/walker2d_natural_pg.yaml`
+- `configs/mujoco/swimmer_empirical_fim.yaml`
+- `configs/mujoco/hopper_empirical_fim.yaml`
+- `configs/mujoco/walker2d_empirical_fim.yaml`
+- `configs/mujoco/swimmer_ppo_clip.yaml`
+- `configs/mujoco/hopper_ppo_clip.yaml`
+- `configs/mujoco/walker2d_ppo_clip.yaml`
+
+### Atari examples
+
+- `configs/atari/beamrider_single_path.yaml`
+- `configs/atari/breakout_single_path.yaml`
+- `configs/atari/enduro_single_path.yaml`
+- `configs/atari/pong_single_path.yaml`
+- `configs/atari/qbert_single_path.yaml`
+- `configs/atari/seaquest_single_path.yaml`
+- `configs/atari/spaceinvaders_single_path.yaml`
+- `configs/atari/*_ppo_clip.yaml`
+- `configs/atari/seaquest_ppo_kl_penalty.yaml`
+
+---
+
+## Code map
 
 | Concept | File |
 |---|---|
-| TRPO / NPG method wrappers | `trpo_repro/methods/trpo_method.py` |
+| Main training entry point | `scripts/train.py` |
+| Evaluation entry point | `scripts/evaluate.py` |
+| Aggregation / plotting | `scripts/aggregate_results.py` |
+| Main training loop | `trpo_repro/runner.py` |
+| TRPO / NPG / empirical-FIM method wrappers | `trpo_repro/methods/trpo_method.py` |
 | PPO method wrapper | `trpo_repro/methods/ppo_method.py` |
 | Random baseline | `trpo_repro/methods/random_policy.py` |
 | TRPO optimizer logic | `trpo_repro/algos/trpo.py` |
 | PPO optimizer logic | `trpo_repro/algos/ppo.py` |
-| Advantage / return utilities | `trpo_repro/algos/advantages.py` |
-| Policy networks | `trpo_repro/models/policies.py` |
-| Value networks | `trpo_repro/models/value_functions.py` |
+| Shared returns / advantages | `trpo_repro/algos/advantages.py` |
+| Parallel rollout manager | `trpo_repro/rollouts/manager.py` |
+| Parallel rollout worker | `trpo_repro/rollouts/worker.py` |
+| Rollout buffer | `trpo_repro/data/buffer.py` |
+| Policies | `trpo_repro/models/policies.py` |
+| Value functions | `trpo_repro/models/value_functions.py` |
 
 ---
 
-## Runtime controls and CLI overrides
+## Paper alignment notes
 
-### Core training CLI
-
-`train.py` supports these important overrides:
-
-| Flag | What it changes | Notes |
-|---|---|---|
-| `--config` | YAML config path | required |
-| `--seed` | `train.seed` | changes run seed |
-| `--method` | `method.name` | switch methods without editing YAML |
-| `--method-variant` / `--method_variant` | `method.variant` | mainly useful for PPO |
-| `--device` | training device | `cpu`, `cuda`, etc. |
-| `--output-dir` | where outputs go | useful for Colab SSD runs |
-| `--overwrite` | reset existing run dir | deletes previous contents of the target run dir |
-| `--memory-mode` | `train.memory_mode` | `standard` or `safe` |
-| `--progress-mode` | `train.progress_mode` | `auto`, `terminal`, `notebook`, `off` |
-| `--obs-storage` / `--obs_storage` | `train.obs_storage` | `auto`, `ram`, `memmap` |
-| `--full-batch-chunk-size` / `--full_batch_chunk_size` | `algo.full_batch_chunk_size` | controls chunked TRPO safe-mode batch size |
-| `--fvp-subsample-fraction` / `--fvp_subsample_fraction` | `algo.fvp_subsample_fraction` | optional Fisher-vector-product subsampling |
-
-### What `--overwrite` means
-
-When you pass `--overwrite`, the target output directory is cleared and recreated. This is useful when rerunning the same config/seed combination and you do **not** want mixed logs from old and new runs.
+- **TRPO single-path** is the main paper-faithful path in this repo. The original TRPO paper also included the **vine** method, but this repo focuses its mature training path on the single-path variant.
+- **Natural policy gradient** is implemented because it is the most natural low-level comparison to TRPO’s trust-region step.
+- **Empirical FIM** is included as a paper-linked ablation, because the TRPO paper explicitly compares the analytic KL-Hessian / Fisher construction against an empirical-FIM alternative.
+- **PPO** includes both the clipped and KL-penalty variants, with the clipped version as the default practical path.
 
 ---
 
-## Memory mode, observation storage, chunking, and FVP subsampling
+## Recommended freeze-and-run practice
 
-### `train.memory_mode`
+Before launching long experiment blocks:
 
-| Value | Meaning | When to use it |
-|---|---|---|
-| `standard` | original full-memory / full-batch path | locomotion, small experiments, high-RAM machines |
-| `safe` | memory-safe path for large batches; uses chunked consumption and storage controls | Atari on laptops or constrained machines |
+1. run one short smoke test for each method/environment family
+2. verify `config_resolved.yaml` contains the intended overrides
+3. verify `run_metadata.json` contains the expected commit hash and runtime settings
+4. then freeze the repo and launch the long runs
 
-### `train.obs_storage`
-
-| Value | Meaning | Notes |
-|---|---|---|
-| `auto` | choose based on memory mode | `ram` for standard, `memmap` for safe by default |
-| `ram` | keep rollout observations in RAM | good for Colab high-RAM runs |
-| `memmap` | disk-backed observation storage | good for low-RAM machines |
-
-### `algo.full_batch_chunk_size`
-
-Controls chunk size for the safe-mode full-batch computations. Larger chunks are usually faster **until** they become memory/bandwidth bound. Typical values to try on Atari are `4096`, `8192`, and sometimes `16384`.
-
-### `algo.fvp_subsample_fraction`
-
-Optional Fisher-vector-product subsampling for TRPO/NPG-style second-order updates.
-
-- unset / `null` → use the full batch for Fisher-vector products
-- `0.1` → use 10% of the batch
-- `10` → also treated as 10%
-
-This affects the **Fisher metric computation**, not the policy objective itself.
-
----
-
-## Progress bar behavior
-
-`train.progress_mode` controls how progress bars render.
-
-| Mode | Best use |
-|---|---|
-| `auto` | default; chooses notebook-safe or terminal-safe behavior automatically |
-| `terminal` | local shell / terminal runs |
-| `notebook` | Jupyter / Colab |
-| `off` | long runs where you want minimum UI overhead |
-
-For long Colab Atari runs, `off` is often the cleanest option.
-
----
-
-## Output structure
-
-Each run writes to:
-
-```text
-outputs/<run_name>/seed_<seed>/
-├── checkpoints/
-├── config_resolved.yaml
-├── metrics.csv
-├── metrics.jsonl
-└── run_metadata.json
-```
-
-### What each file is for
-
-| File | Purpose |
-|---|---|
-| `config_resolved.yaml` | exact resolved config actually used for the run |
-| `run_metadata.json` | method/environment/seed/runtime summary |
-| `metrics.csv` | epoch-wise metrics in tabular form |
-| `metrics.jsonl` | same information as line-delimited JSON |
-| `checkpoints/` | periodic saved model checkpoints |
-
-Comparison plots are written under:
-
-```text
-outputs/comparisons/<env_slug>/
-```
-
----
-
-## Important logged metrics
-
-These are the most useful columns in `metrics.csv`.
-
-### Generic rollout / performance metrics
-
-| Metric | Meaning |
-|---|---|
-| `iteration` / `epoch` | training iteration index |
-| `env_steps` | cumulative environment steps seen so far |
-| `batch_env_steps` | steps collected in the current epoch |
-| `episodes_in_batch` | complete episodes used in the epoch batch |
-| `train_return_mean` | mean episodic return over episodes collected this epoch |
-| `train_return_std` | standard deviation of episodic return this epoch |
-| `train_len_mean` | mean episode length this epoch |
-| `ep_return_mean`, `ep_return_std`, `ep_len_mean` | aliases / legacy-compatible names for the same quantities |
-
-### TRPO / NPG style optimization metrics
-
-| Metric | Meaning |
-|---|---|
-| `policy_loss_before`, `policy_loss_after` | surrogate objective before/after update |
-| `entropy` | policy entropy for the batch |
-| `approx_kl` | estimated KL change after update |
-| `line_search_success` | whether TRPO line search accepted a step |
-| `cg_norm` | size / norm-related diagnostic from conjugate gradient |
-
-### PPO-specific metrics
-
-| Metric | Meaning |
-|---|---|
-| `clip_fraction` | fraction of updates where the PPO ratio was clipped |
-| `kl_coef` | KL penalty coefficient (relevant for `kl_penalty` PPO) |
-| `value_loss_before`, `value_loss_after` | value-function fitting diagnostics |
-
-### Timing metric
-
-| Metric | Meaning |
-|---|---|
-| `wall_time_sec` | total epoch wall-clock time |
-
-### About `train_return_mean`
-
-This is the main metric you will most often plot. It is the **mean raw episodic return** collected in that epoch. It is **not** advantage-normalized, reward-normalized, or otherwise rescaled by the logging layer.
-
----
-
-## Aggregation and plotting
-
-### Aggregate one method over seeds
-
-```bash
-python3 scripts/aggregate_results.py \
-  --runs-root outputs/swimmer_single_path \
-  --metric train_return_mean \
-  --x-axis iteration
-```
-
-### Compare multiple methods on the same environment
-
-```bash
-python3 scripts/aggregate_results.py \
-  --runs-root outputs/swimmer_single_path \
-  --runs-root outputs/swimmer_natural_pg \
-  --runs-root outputs/swimmer_ppo_clip \
-  --compare \
-  --metric train_return_mean \
-  --x-axis iteration
-```
-
-### Important options
-
-| Flag | Meaning |
-|---|---|
-| `--runs-root` | root directory for a method run (`outputs/<run_name>` or specific `seed_*` dir); can be repeated |
-| `--metric` | metric column to plot, e.g. `train_return_mean` |
-| `--x-axis` | `iteration`, `epoch`, or `env_steps` |
-| `--compare` | compare multiple methods on one environment |
-| `--labels` | optional custom labels |
-| `--save` | explicit output path for the plot |
-| `--title` | custom plot title |
-| `--allow-legacy-runs` | allow runs that do not have `run_metadata.json` |
-
-### Same-environment safety check
-
-In compare mode, the script checks that all runs have the same `env_id`. This helps prevent accidental comparison of different tasks on one plot.
-
----
-
-## Evaluation
-
-### Example
-
-```bash
-python3 scripts/evaluate.py \
-  --config configs/mujoco/swimmer_single_path.yaml \
-  --checkpoint outputs/swimmer_single_path/seed_0/checkpoints/epoch_0050.pt \
-  --episodes 10 \
-  --device cpu \
-  --deterministic
-```
-
-### Evaluation options
-
-| Flag | Meaning |
-|---|---|
-| `--config` | config used to rebuild the env/model |
-| `--checkpoint` | checkpoint to load |
-| `--episodes` | number of evaluation episodes |
-| `--device` | `cpu` or `cuda` |
-| `--seed` | evaluation seed |
-| `--deterministic` | use deterministic actions where supported |
-
----
-
-## Reproduce-paper helper script
-
-The repo also includes:
-
-```bash
-python3 scripts/reproduce_paper.py --suite mujoco --seeds 0 1 2 3 4
-python3 scripts/reproduce_paper.py --suite atari --seeds 0
-```
-
-This is a convenience launcher for a fixed suite of configs.
-
----
-
-## Colab workflow (short version)
-
-See the full notebook in `notebooks/colab_quickstart.ipynb`.
-
-### Typical pattern
-
-1. keep the repo on Google Drive
-2. copy it to `/content/trpo` at the start of the session
-3. run training from `/content/trpo`
-4. store outputs on `/content/...` while running
-5. copy outputs back to Drive when done
-
-### Minimal Colab commands
-
-```python
-from google.colab import drive
-drive.mount('/content/drive')
-```
-
-```bash
-rm -rf /content/trpo
-cp -r "/content/drive/MyDrive/Colab Notebooks/839/trpo" /content/trpo
-cd /content/trpo
-python3 -m pip install -r requirements.txt
-python3 -m pip install -e .
-```
-
-```python
-import torch
-print(torch.cuda.is_available())
-print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no gpu')
-```
-
-```bash
-python3 scripts/train.py \
-  --config configs/atari/seaquest_single_path.yaml \
-  --memory-mode safe \
-  --obs_storage ram \
-  --full_batch_chunk_size 8192 \
-  --fvp_subsample_fraction 0.1 \
-  --device cuda \
-  --progress-mode off \
-  --output-dir /content/trpo_runs/seaquest_single_path/seed_0 \
-  --overwrite
-```
-
-```bash
-mkdir -p "/content/drive/MyDrive/Colab Notebooks/839/trpo_outputs"
-cp -r /content/trpo_runs "/content/drive/MyDrive/Colab Notebooks/839/trpo_outputs/"
-```
-
----
-
-## Available configs in this repo
-
-### Mujoco / classic control / locomotion
-
-| Config |
-|---|
-| `configs/mujoco/cartpole_linear.yaml` |
-| `configs/mujoco/cartpole_random.yaml` |
-| `configs/mujoco/cartpole_natural_pg.yaml` |
-| `configs/mujoco/cartpole_trpo_max_kl.yaml` |
-| `configs/mujoco/cartpole_ppo_clip.yaml` |
-| `configs/mujoco/swimmer_single_path.yaml` |
-| `configs/mujoco/swimmer_random.yaml` |
-| `configs/mujoco/swimmer_natural_pg.yaml` |
-| `configs/mujoco/swimmer_ppo_clip.yaml` |
-| `configs/mujoco/swimmer_ppo_kl_penalty.yaml` |
-| `configs/mujoco/hopper_single_path.yaml` |
-| `configs/mujoco/hopper_random.yaml` |
-| `configs/mujoco/hopper_natural_pg.yaml` |
-| `configs/mujoco/hopper_ppo_clip.yaml` |
-| `configs/mujoco/walker2d_single_path.yaml` |
-| `configs/mujoco/walker2d_random.yaml` |
-| `configs/mujoco/walker2d_natural_pg.yaml` |
-| `configs/mujoco/walker2d_ppo_clip.yaml` |
-| `configs/mujoco/walker_ppo_clip.yaml` |
-| `configs/mujoco/walker_natural_pg.yaml` |
-| `configs/mujoco/walker_random.yaml` |
-| legacy modernized configs: `configs/mujoco/cartpole_mc_baseline.yaml`, `configs/mujoco/cartpole_modern_gae.yaml` |
-
-### Atari
-
-| Config |
-|---|
-| `configs/atari/beamrider_single_path.yaml` |
-| `configs/atari/breakout_single_path.yaml` |
-| `configs/atari/enduro_single_path.yaml` |
-| `configs/atari/pong_single_path.yaml` |
-| `configs/atari/qbert_single_path.yaml` |
-| `configs/atari/seaquest_single_path.yaml` |
-| `configs/atari/spaceinvaders_single_path.yaml` |
-| `configs/atari/pong_random.yaml` |
-| `configs/atari/beamrider_ppo_clip.yaml` |
-| `configs/atari/breakout_ppo_clip.yaml` |
-| `configs/atari/enduro_ppo_clip.yaml` |
-| `configs/atari/pong_ppo_clip.yaml` |
-| `configs/atari/qbert_ppo_clip.yaml` |
-| `configs/atari/seaquest_ppo_clip.yaml` |
-| `configs/atari/spaceinvaders_ppo_clip.yaml` |
-| `configs/atari/seaquest_ppo_kl_penalty.yaml` |
-
----
-
-## Repository layout
-
-```text
-trpo_repro/
-├── algos/          # optimization logic (TRPO, PPO, advantages, CG, line search)
-├── data/           # rollout storage and trajectory buffers
-├── envs/           # env factories and wrappers for Atari / Mujoco
-├── methods/        # method wrappers registered by --method
-├── models/         # policies, CNN/MLP bodies, value functions
-└── utils/          # general utilities + torch utilities
-```
-
-### Important files to know
-
-| File | Why you care |
-|---|---|
-| `scripts/train.py` | main experiment launcher |
-| `scripts/aggregate_results.py` | plotting / seed aggregation / method comparison |
-| `scripts/evaluate.py` | evaluate checkpoints |
-| `scripts/reproduce_paper.py` | convenience suite launcher |
-| `trpo_repro/runner.py` | main training loop |
-| `trpo_repro/algos/trpo.py` | TRPO / NPG optimization logic |
-| `trpo_repro/algos/ppo.py` | PPO optimization logic |
-| `trpo_repro/data/buffer.py` | rollout buffer implementation |
-| `trpo_repro/algos/advantages.py` | return / advantage computations |
-| `trpo_repro/models/policies.py` | Gaussian / categorical policies |
-| `trpo_repro/models/value_functions.py` | value-function models |
-
----
-
-## Notes and caveats
-
-- `paper_mc` is the repo’s paper-faithful TRPO single-path mode.
-- `safe` memory mode changes **storage and execution order**, not the objective being optimized.
-- Atari on laptops generally benefits from `memory_mode: safe`.
-- Colab high-RAM runs often work well with `memory_mode: safe`, `obs_storage: ram`, and a tuned `full_batch_chunk_size`.
-- `fvp_subsample_fraction` is an optional TRPO/NPG acceleration and should be reported if you use it in final experiments.
-- The repo still contains legacy / modernized estimator options (`mc_baseline`, `gae`) even if your report focuses mostly on `paper_mc` for TRPO.
-
+At this point, this repository is intended to be used exactly that way.
