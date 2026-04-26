@@ -44,16 +44,34 @@ class PPOAgent:
             raise ValueError(f"Unsupported PPO variant: {variant}")
         if self.variant == "kl":
             self.variant = "kl_penalty"
-        self.pi_optimizer = torch.optim.Adam(
-            self.policy.parameters(),
-            lr=float(cfg.algo.get("ppo_pi_lr", 3e-4)),
-        )
+        self.base_pi_lr = float(cfg.algo.get("ppo_pi_lr", 3e-4))
+        self.base_vf_lr = float(cfg.algo.get("ppo_vf_lr", cfg.algo.get("vf_lr", 1e-3)))
+        self.base_clip_ratio = float(cfg.algo.get("ppo_clip_ratio", 0.2))
+        self.anneal_lr = bool(cfg.algo.get("ppo_anneal_lr", False))
+        self.anneal_clip_ratio = bool(cfg.algo.get("ppo_anneal_clip_ratio", False))
+        self.progress_remaining = 1.0
+        self.current_clip_ratio = self.base_clip_ratio
+        self.pi_optimizer = torch.optim.Adam(self.policy.parameters(), lr=self.base_pi_lr)
         self.vf_optimizer = torch.optim.Adam(
             self.value_fn.parameters(),
-            lr=float(cfg.algo.get("ppo_vf_lr", cfg.algo.get("vf_lr", 1e-3))),
+            lr=self.base_vf_lr,
             weight_decay=float(cfg.algo.get("vf_weight_decay", 0.0)),
         )
         self.kl_coef = float(cfg.algo.get("ppo_kl_coef", 1.0))
+        self._apply_schedules()
+
+    def _apply_schedules(self) -> None:
+        lr_mult = self.progress_remaining if self.anneal_lr else 1.0
+        clip_mult = self.progress_remaining if self.anneal_clip_ratio else 1.0
+        for group in self.pi_optimizer.param_groups:
+            group["lr"] = self.base_pi_lr * lr_mult
+        for group in self.vf_optimizer.param_groups:
+            group["lr"] = self.base_vf_lr * lr_mult
+        self.current_clip_ratio = self.base_clip_ratio * clip_mult
+
+    def set_training_progress(self, progress_remaining: float) -> None:
+        self.progress_remaining = float(np.clip(progress_remaining, 0.0, 1.0))
+        self._apply_schedules()
 
     @torch.no_grad()
     def step(self, obs: torch.Tensor, deterministic: bool = False):
@@ -78,9 +96,7 @@ class PPOAgent:
         for param in old_policy.parameters():
             param.requires_grad_(False)
 
-        policy_loss_before, entropy_before, approx_kl_before, clip_fraction_before = self._policy_metrics(
-            self.policy, old_policy, obs, act, adv, old_logp, n
-        )
+        policy_loss_before, _, _, _ = self._policy_metrics(self.policy, old_policy, obs, act, adv, old_logp, n)
         value_loss_before, value_ev_before = self._value_metrics(obs, ret, n)
 
         self._update_policy(obs, act, adv, old_logp, old_policy, n)
@@ -126,11 +142,12 @@ class PPOAgent:
             self.value_fn.load_state_dict(state["value_fn"])
         if state.get("ppo_kl_coef") is not None:
             self.kl_coef = float(state["ppo_kl_coef"])
+        self._apply_schedules()
 
     def _update_policy(self, obs, act, adv, old_logp, old_policy, n: int) -> None:
         minibatch_size = int(self.cfg.algo.get("ppo_minibatch_size", 256))
         update_epochs = int(self.cfg.algo.get("ppo_update_epochs", 10))
-        clip_ratio = float(self.cfg.algo.get("ppo_clip_ratio", 0.2))
+        clip_ratio = self.current_clip_ratio
         entropy_coef = float(self.cfg.algo.get("ppo_entropy_coef", 0.0))
         target_kl = float(self.cfg.algo.get("ppo_target_kl", 0.01))
         max_grad_norm = self.cfg.algo.get("ppo_max_grad_norm")
@@ -197,7 +214,7 @@ class PPOAgent:
     @torch.no_grad()
     def _policy_metrics(self, policy, old_policy, obs, act, adv, old_logp, n: int):
         batch_size = int(self.cfg.algo.get("ppo_eval_batch_size", self.cfg.algo.get("ppo_minibatch_size", 256)))
-        clip_ratio = float(self.cfg.algo.get("ppo_clip_ratio", 0.2))
+        clip_ratio = self.current_clip_ratio
         total_loss = 0.0
         total_entropy = 0.0
         total_kl = 0.0

@@ -6,10 +6,31 @@ EstimatorName = str
 
 
 _ALIAS_MAP = {
-    "mc": "mc_baseline",
-    "mc_baseline": "mc_baseline",
+    # Paper-faithful single-path TRPO / Monte Carlo returns
+    "trpo_paper": "trpo_paper",
+    "trpo-paper": "trpo_paper",
+    "paper_returns": "trpo_paper",
+    "paper-returns": "trpo_paper",
+    "paper_mc": "trpo_paper",
+    "paper": "trpo_paper",
+    # Monte Carlo returns with learned value baseline
+    "value_baseline": "value_baseline",
+    "returns_value_baseline": "value_baseline",
+    "returns-value-baseline": "value_baseline",
+    "mc_value_baseline": "value_baseline",
+    "mc-value-baseline": "value_baseline",
+    "mc_baseline": "value_baseline",
+    "mc": "value_baseline",
+    # Generalized advantage estimation
     "gae": "gae",
-    "paper_mc": "paper_mc",
+    "generalized_advantage_estimation": "gae",
+}
+
+
+_ESTIMATOR_DESCRIPTIONS = {
+    "trpo_paper": "Paper-faithful Monte Carlo returns / trajectory Q-estimates with no learned value baseline.",
+    "value_baseline": "Monte Carlo returns with a learned value baseline subtracted from the policy-training weights.",
+    "gae": "Generalized Advantage Estimation using lambda-weighted TD residuals and a learned value function.",
 }
 
 
@@ -20,6 +41,11 @@ def canonicalize_estimator(estimator: str | None) -> EstimatorName:
     if normalized not in _ALIAS_MAP:
         raise ValueError(f"Unknown estimator mode: {estimator}")
     return _ALIAS_MAP[normalized]
+
+
+
+def estimator_description(estimator: str | None) -> str:
+    return _ESTIMATOR_DESCRIPTIONS[canonicalize_estimator(estimator)]
 
 
 
@@ -42,16 +68,17 @@ def compute_path_targets(
     lam: float,
     last_val: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute return targets and training weights/advantages for one path.
+    """Compute return targets and policy-training weights/advantages for one path.
 
     Returns
     -------
     returns:
         Discounted return targets for value-function fitting.
     weights:
-        Policy-training weights. For paper_mc, this is identical to returns.
-        For mc_baseline, this is returns minus baseline values.
-        For gae, this is the generalized advantage estimate.
+        Policy-training weights / advantages.
+        * trpo_paper: identical to returns
+        * value_baseline: returns minus baseline values
+        * gae: lambda-weighted generalized advantage estimate
     """
     mode = canonicalize_estimator(estimator)
     rews = np.asarray(rewards, dtype=np.float32)
@@ -64,10 +91,10 @@ def compute_path_targets(
 
     rews_ext = np.append(rews, np.float32(last_val))
 
-    if mode == "paper_mc":
+    if mode == "trpo_paper":
         returns = discounted_cumsum(rews_ext, gamma)[:-1]
         weights = returns.copy()
-    elif mode == "mc_baseline":
+    elif mode == "value_baseline":
         returns = discounted_cumsum(rews_ext, gamma)[:-1]
         weights = returns - vals
     elif mode == "gae":
@@ -75,7 +102,7 @@ def compute_path_targets(
         deltas = rews_ext[:-1] + gamma * vals_ext[1:] - vals_ext[:-1]
         weights = discounted_cumsum(deltas.astype(np.float32, copy=False), gamma * lam)
         returns = discounted_cumsum(rews_ext, gamma)[:-1]
-    else:  # pragma: no cover - guarded by canonicalize_estimator
+    else:  # pragma: no cover
         raise ValueError(f"Unsupported estimator mode: {mode}")
 
     returns = np.asarray(returns, dtype=np.float32)
