@@ -12,7 +12,7 @@ algo:
   max_kl: 0.01
   gamma: 0.99
   lam: 1.0
-  estimator: paper_mc
+  estimator: trpo_paper
   normalize_weights: false
   bootstrap_truncated_paths: false
   vf_lr: 0.0003

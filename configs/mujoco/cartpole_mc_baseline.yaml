@@ -8,7 +8,7 @@ env:
   type: classic_control
   id: CartPole-v1
 algo:
-  estimator: mc_baseline
+  estimator: value_baseline
   normalize_weights: true
   bootstrap_truncated_paths: true
   max_kl: 0.01

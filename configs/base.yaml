@@ -22,7 +22,7 @@ method:
 algo:
   gamma: 0.99
   lam: 1.0
-  estimator: paper_mc
+  estimator: trpo_paper
   normalize_weights: false
   bootstrap_truncated_paths: false
   max_kl: 0.01
@@ -35,6 +35,8 @@ algo:
   npg_stepsize: 0.05
   full_batch_chunk_size: null
   fvp_subsample_fraction: null
+  fvp_estimator: analytic
+  empirical_fim_batch_size: 128
   vf_lr: 0.001
   vf_weight_decay: 0.0
   vf_iters: 40
@@ -51,6 +53,8 @@ algo:
   ppo_kl_coef: 1.0
   ppo_adaptive_kl: true
   ppo_max_grad_norm: 0.5
+  ppo_anneal_lr: false
+  ppo_anneal_clip_ratio: false
 
 model:
   activation: tanh

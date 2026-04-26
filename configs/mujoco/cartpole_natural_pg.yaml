@@ -10,7 +10,7 @@ env:
 method:
   name: natural_pg
 algo:
-  estimator: paper_mc
+  estimator: trpo_paper
   normalize_weights: false
   bootstrap_truncated_paths: false
   gamma: 0.99

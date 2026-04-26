@@ -11,7 +11,7 @@ method:
   name: random
   variant: uniform
 algo:
-  estimator: paper_mc
+  estimator: trpo_paper
   normalize_weights: false
   bootstrap_truncated_paths: false
 model:

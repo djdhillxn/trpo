@@ -1,0 +1,9 @@
+inherits: cartpole_linear.yaml
+train:
+  run_name: cartpole_empirical_fim
+method:
+  name: empirical_fim
+algo:
+  estimator: trpo_paper
+  fvp_estimator: empirical
+  fvp_subsample_fraction: 0.1

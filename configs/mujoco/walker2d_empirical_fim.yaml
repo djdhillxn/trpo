@@ -1,0 +1,9 @@
+inherits: walker2d_single_path.yaml
+train:
+  run_name: walker2d_empirical_fim
+method:
+  name: empirical_fim
+algo:
+  estimator: trpo_paper
+  fvp_estimator: empirical
+  fvp_subsample_fraction: 0.1

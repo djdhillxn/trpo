@@ -27,6 +27,8 @@ algo:
   ppo_vf_epochs: 4
   ppo_entropy_coef: 0.01
   ppo_max_grad_norm: 0.5
+  ppo_anneal_lr: true
+  ppo_anneal_clip_ratio: true
 model:
   activation: relu
   policy_hidden_sizes: []
