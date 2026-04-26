@@ -4,6 +4,7 @@ from typing import Any
 
 import torch
 
+from trpo_repro.algos.advantages import canonicalize_estimator
 from trpo_repro.algos.ppo import PPOAgent
 from trpo_repro.methods.base import BaseMethod, MethodUpdateStats
 from trpo_repro.models.policies import make_policy
@@ -18,8 +19,8 @@ class PPOMethod(BaseMethod):
     def __init__(self, obs_space, act_space, cfg, device: torch.device) -> None:
         super().__init__(cfg=cfg, device=device)
         self.estimator = self._resolve_estimator(cfg)
-        if self.estimator not in {"gae", "mc", "mc_baseline"}:
-            raise ValueError(f"PPO supports gae or mc_baseline-style estimators, got: {self.estimator}")
+        if self.estimator not in {"gae", "value_baseline"}:
+            raise ValueError(f"PPO supports gae or value_baseline estimators, got: {self.estimator}")
         self._variant = self._resolve_variant(cfg)
         self.policy = make_policy(obs_space, act_space, cfg)
         self.value_fn = ValueFunction(tuple(obs_space.shape), cfg)
@@ -29,13 +30,9 @@ class PPOMethod(BaseMethod):
     def _resolve_estimator(cfg) -> str:
         explicit = cfg.algo.get("estimator")
         if explicit is not None:
-            return str(explicit).lower()
+            return canonicalize_estimator(explicit)
         legacy = str(cfg.algo.get("advantage_mode", "gae")).lower()
-        mapping = {
-            "mc": "mc_baseline",
-            "gae": "gae",
-        }
-        return mapping.get(legacy, legacy)
+        return canonicalize_estimator(legacy)
 
     @staticmethod
     def _resolve_variant(cfg) -> str:
@@ -59,6 +56,13 @@ class PPOMethod(BaseMethod):
     @property
     def variant(self) -> str:
         return self._variant
+
+    def set_training_progress(self, epoch: int, total_epochs: int) -> None:
+        if total_epochs <= 1:
+            progress_remaining = 1.0
+        else:
+            progress_remaining = max(0.0, 1.0 - float(epoch - 1) / float(total_epochs - 1))
+        self.agent.set_training_progress(progress_remaining)
 
     def act(self, obs: torch.Tensor, deterministic: bool = False):
         return self.agent.step(obs, deterministic=deterministic)

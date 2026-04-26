@@ -57,3 +57,6 @@ class BaseMethod:
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
         del state
+
+    def set_training_progress(self, epoch: int, total_epochs: int) -> None:
+        del epoch, total_epochs

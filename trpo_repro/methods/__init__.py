@@ -4,7 +4,7 @@ import torch
 
 from trpo_repro.methods.ppo_method import PPOMethod
 from trpo_repro.methods.random_policy import RandomPolicyMethod
-from trpo_repro.methods.trpo_method import NaturalPolicyGradientMethod, TRPOMaxKLMethod, TRPOMethod
+from trpo_repro.methods.trpo_method import EmpiricalFIMMethod, NaturalPolicyGradientMethod, TRPOMaxKLMethod, TRPOMethod
 
 
 _METHODS = {
@@ -12,6 +12,8 @@ _METHODS = {
     "natural_pg": NaturalPolicyGradientMethod,
     "npg": NaturalPolicyGradientMethod,
     "trpo_max_kl": TRPOMaxKLMethod,
+    "empirical_fim": EmpiricalFIMMethod,
+    "trpo_empirical_fim": EmpiricalFIMMethod,
     "ppo": PPOMethod,
     "random": RandomPolicyMethod,
 }

@@ -47,8 +47,8 @@ def rollout_worker_loop(
     gamma = float(cfg.algo.gamma)
     lam = float(cfg.algo.get("lam", 1.0))
     max_ep_len = int(cfg.train.get("max_ep_len", 1000))
-    estimator = canonicalize_estimator(getattr(method, "estimator", cfg.algo.get("estimator", "paper_mc")))
-    bootstrap_truncated_paths = bool(cfg.algo.get("bootstrap_truncated_paths", estimator != "paper_mc"))
+    estimator = canonicalize_estimator(getattr(method, "estimator", cfg.algo.get("estimator", "trpo_paper")))
+    bootstrap_truncated_paths = bool(cfg.algo.get("bootstrap_truncated_paths", estimator != "trpo_paper"))
 
     obs_buf = shared["obs"]
     act_buf = shared["act"]
@@ -151,7 +151,7 @@ def rollout_worker_loop(
 
                     obs = next_obs
                     if reached_target:
-                        if estimator == "paper_mc":
+                        if estimator == "trpo_paper":
                             continue
                         last_val = 0.0
                         if bootstrap_truncated_paths:

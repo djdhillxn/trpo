@@ -28,8 +28,8 @@ class Runner:
         self.method_variant = getattr(self.method, "variant", "default")
 
         self.estimator = getattr(self.method, "estimator", None)
-        self.normalize_weights = bool(cfg.algo.get("normalize_weights", self.estimator != "paper_mc"))
-        self.bootstrap_truncated_paths = bool(cfg.algo.get("bootstrap_truncated_paths", self.estimator != "paper_mc"))
+        self.normalize_weights = bool(cfg.algo.get("normalize_weights", self.estimator != "trpo_paper"))
+        self.bootstrap_truncated_paths = bool(cfg.algo.get("bootstrap_truncated_paths", self.estimator != "trpo_paper"))
         self.trainable = bool(getattr(self.method, "trainable", False))
         self.supports_checkpoints = bool(getattr(self.method, "supports_checkpoints", False))
         self.batch_obs_to_device = bool(getattr(self.method, "batch_obs_to_device", True))
@@ -46,7 +46,7 @@ class Runner:
             self.obs_storage = "memmap" if self.memory_mode == "safe" else "ram"
         configured_chunk = cfg.algo.get("full_batch_chunk_size")
         if configured_chunk is None:
-            self.full_batch_chunk_size = 2048 if self.memory_mode == "safe" and self.estimator == "paper_mc" else None
+            self.full_batch_chunk_size = 2048 if self.memory_mode == "safe" and self.estimator == "trpo_paper" else None
         else:
             configured_chunk = int(configured_chunk)
             self.full_batch_chunk_size = configured_chunk if configured_chunk > 0 else None
@@ -63,8 +63,10 @@ class Runner:
                 else:
                     raise ValueError("fvp_subsample_fraction must be in (0, 1] or a percentage in (0, 100].")
             self.fvp_subsample_fraction = configured_fvp_fraction
-        if self.memory_mode == "safe" and self.trainable and self.estimator != "paper_mc" and self.method_name != "ppo":
-            raise ValueError("memory_mode=safe is only supported for paper_mc TRPO/NPG and PPO training in this repo.")
+        if self.memory_mode == "safe" and self.trainable and self.estimator != "trpo_paper" and self.method_name != "ppo":
+            raise ValueError("memory_mode=safe is only supported for trpo_paper TRPO/NPG and PPO training in this repo.")
+        if self.memory_mode == "safe" and self.method_name in {"empirical_fim", "trpo_empirical_fim"}:
+            raise ValueError("Empirical-FIM TRPO currently supports only memory_mode=standard.")
         self.cfg.train.obs_storage = self.obs_storage
         self.cfg.algo.full_batch_chunk_size = self.full_batch_chunk_size
         self.cfg.algo.fvp_subsample_fraction = self.fvp_subsample_fraction
@@ -87,6 +89,8 @@ class Runner:
         suite = str(cfg.env.get("type", "unknown")).lower()
         self.git_commit_hash = get_git_commit_hash(Path(__file__).resolve())
 
+        self.fvp_estimator = str(cfg.algo.get("fvp_estimator", "analytic")).lower()
+
         self.run_metadata = {
             "method": self.method_name,
             "method_variant": self.method_variant,
@@ -100,6 +104,7 @@ class Runner:
             "obs_storage": self.obs_storage,
             "full_batch_chunk_size": self.full_batch_chunk_size,
             "fvp_subsample_fraction": self.fvp_subsample_fraction,
+            "fvp_estimator": self.fvp_estimator,
             "progress_mode": self.progress_mode,
             "num_workers": self.num_workers,
             "parallel_rollouts": self.parallel_rollouts,
@@ -117,6 +122,7 @@ class Runner:
             "obs_storage": self.obs_storage,
             "full_batch_chunk_size": self.full_batch_chunk_size,
             "fvp_subsample_fraction": self.fvp_subsample_fraction,
+            "fvp_estimator": self.fvp_estimator,
             "progress_mode": self.progress_mode,
             "num_workers": self.num_workers,
             "parallel_rollouts": self.parallel_rollouts,
@@ -138,7 +144,7 @@ class Runner:
         else:
             act_shape = tuple(self.env.action_space.shape)
             act_dtype = np.float32
-        buffer_size = target_steps + (max_ep_len if self.estimator == "paper_mc" else 0)
+        buffer_size = target_steps + (max_ep_len if self.estimator == "trpo_paper" else 0)
         return TrajectoryBuffer(
             obs_shape=obs_shape,
             act_shape=act_shape,
@@ -181,7 +187,7 @@ class Runner:
             assert float(stats.did_update) == 0.0, "Random method should never report an update."
         elif self.method_name in {"natural_pg", "npg"}:
             assert np.isnan(stats.line_search_success), "Natural PG should not report line search success."
-        elif self.method_name in {"trpo", "trpo_max_kl"}:
+        elif self.method_name in {"trpo", "trpo_max_kl", "empirical_fim", "trpo_empirical_fim"}:
             assert float(stats.line_search_success) in {0.0, 1.0}, "TRPO methods should report line search success."
         elif self.method_name == "ppo":
             assert np.isnan(stats.line_search_success), "PPO should not report line search success."
@@ -223,6 +229,7 @@ class Runner:
         try:
             for epoch in epoch_iter:
                 epoch_start_time = time.time()
+                self.method.set_training_progress(epoch, total_epochs)
                 steps_in_epoch = 0
                 collect_start_time = time.time()
 
@@ -287,7 +294,7 @@ class Runner:
 
                         obs = next_obs
                         if reached_target:
-                            if not self.trainable or self.estimator == "paper_mc":
+                            if not self.trainable or self.estimator == "trpo_paper":
                                 continue
                             last_val = 0.0
                             if self.bootstrap_truncated_paths:

@@ -4,6 +4,7 @@ from typing import Any
 
 import torch
 
+from trpo_repro.algos.advantages import canonicalize_estimator
 from trpo_repro.algos.trpo import TRPOAgent
 from trpo_repro.methods.base import BaseMethod, MethodUpdateStats
 from trpo_repro.models.policies import make_policy
@@ -18,14 +19,16 @@ class SecondOrderPolicyMethod(BaseMethod):
     update_mode = "trpo"
     kl_constraint_metric = "average"
     fvp_kl_metric = "average"
+    default_fvp_estimator = "analytic"
 
     def __init__(self, obs_space, act_space, cfg, device: torch.device) -> None:
         super().__init__(cfg=cfg, device=device)
         self.estimator = self._resolve_estimator(cfg)
-        self.use_value_function = self.estimator in {"mc_baseline", "gae"}
+        self.use_value_function = self.estimator in {"value_baseline", "gae"}
         self.policy = make_policy(obs_space, act_space, cfg)
         self.value_fn = ValueFunction(tuple(obs_space.shape), cfg) if self.use_value_function else None
         fvp_kl_metric = str(cfg.algo.get("fvp_kl_metric", self.fvp_kl_metric)).lower()
+        fvp_estimator = str(cfg.algo.get("fvp_estimator", self.default_fvp_estimator)).lower()
         self.agent = TRPOAgent(
             self.policy,
             self.value_fn,
@@ -34,19 +37,16 @@ class SecondOrderPolicyMethod(BaseMethod):
             update_mode=self.update_mode,
             kl_constraint_metric=self.kl_constraint_metric,
             fvp_kl_metric=fvp_kl_metric,
+            fvp_estimator=fvp_estimator,
         )
 
     @staticmethod
     def _resolve_estimator(cfg) -> str:
         explicit = cfg.algo.get("estimator")
         if explicit is not None:
-            return str(explicit).lower()
+            return canonicalize_estimator(explicit)
         legacy = str(cfg.algo.get("advantage_mode", "mc")).lower()
-        mapping = {
-            "mc": "mc_baseline",
-            "gae": "gae",
-        }
-        return mapping.get(legacy, legacy)
+        return canonicalize_estimator(legacy)
 
     @property
     def name(self) -> str:
@@ -99,6 +99,7 @@ class TRPOMethod(SecondOrderPolicyMethod):
     update_mode = "trpo"
     kl_constraint_metric = "average"
     fvp_kl_metric = "average"
+    default_fvp_estimator = "analytic"
 
 
 class NaturalPolicyGradientMethod(SecondOrderPolicyMethod):
@@ -106,6 +107,7 @@ class NaturalPolicyGradientMethod(SecondOrderPolicyMethod):
     update_mode = "npg"
     kl_constraint_metric = "average"
     fvp_kl_metric = "average"
+    default_fvp_estimator = "analytic"
 
 
 class TRPOMaxKLMethod(SecondOrderPolicyMethod):
@@ -113,3 +115,12 @@ class TRPOMaxKLMethod(SecondOrderPolicyMethod):
     update_mode = "trpo"
     kl_constraint_metric = "max"
     fvp_kl_metric = "average"
+    default_fvp_estimator = "analytic"
+
+
+class EmpiricalFIMMethod(SecondOrderPolicyMethod):
+    method_name = "empirical_fim"
+    update_mode = "trpo"
+    kl_constraint_metric = "average"
+    fvp_kl_metric = "average"
+    default_fvp_estimator = "empirical"
