@@ -134,7 +134,7 @@ Typical workflow:
 
 A reference notebook is included here:
 
-- `notebooks/colab_quickstart.ipynb`
+- `docs/colab_quickstart.ipynb`
 
 It shows how to:
 

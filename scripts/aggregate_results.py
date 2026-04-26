@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import json
 from pathlib import Path
@@ -141,7 +139,7 @@ def _load_steps_per_epoch(seed_dir: Path) -> int | None:
         return None
 
 
-def _prepare_seed_frame(seed_dir: Path, metric: str, x_axis: str) -> pd.DataFrame:
+def _prepare_seed_frame(seed_dir: Path, metric: str, x_axis: str) -> "pd.DataFrame":
     csv_path = seed_dir / "metrics.csv"
     df = pd.read_csv(csv_path)
     metric_col = _resolve_column_name(df.columns, metric, _METRIC_ALIASES)
@@ -167,7 +165,13 @@ def _prepare_seed_frame(seed_dir: Path, metric: str, x_axis: str) -> pd.DataFram
     return out
 
 
-def _aggregate_seed_frames(seed_dirs: list[Path], metric: str, x_axis: str, *, allow_legacy_runs: bool) -> tuple[pd.DataFrame, dict]:
+def _aggregate_seed_frames(
+    seed_dirs: list[Path],
+    metric: str,
+    x_axis: str,
+    *,
+    allow_legacy_runs: bool,
+) -> tuple["pd.DataFrame", dict]:
     frames = []
     first_meta = None
     for seed_dir in seed_dirs:
@@ -193,7 +197,7 @@ def _aggregate_seed_frames(seed_dirs: list[Path], metric: str, x_axis: str, *, a
     return summary, first_meta or {}
 
 
-def _maybe_smooth(summary: pd.DataFrame, metric: str, window: int) -> pd.DataFrame:
+def _maybe_smooth(summary: "pd.DataFrame", metric: str, window: int) -> "pd.DataFrame":
     if window <= 1:
         return summary
     out = summary.copy()
@@ -202,7 +206,7 @@ def _maybe_smooth(summary: pd.DataFrame, metric: str, window: int) -> pd.DataFra
     return out
 
 
-def _summary_row(label: str, env_id: str, metric: str, x_axis: str, summary: pd.DataFrame) -> dict[str, object]:
+def _summary_row(label: str, env_id: str, metric: str, x_axis: str, summary: "pd.DataFrame") -> dict[str, object]:
     ordered = summary.sort_values(x_axis).reset_index(drop=True)
     final_row = ordered.iloc[-1]
     best_idx = ordered[f"{metric}_mean"].idxmax()
