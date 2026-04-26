@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import torch
 
 
 RUN_ARTIFACT_NAMES = {
@@ -43,6 +42,8 @@ def read_json(path: str | Path) -> dict[str, Any]:
 
 
 def set_seed(seed: int) -> None:
+    import torch
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

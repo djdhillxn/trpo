@@ -47,7 +47,8 @@ def rollout_worker_loop(
     gamma = float(cfg.algo.gamma)
     lam = float(cfg.algo.get("lam", 1.0))
     max_ep_len = int(cfg.train.get("max_ep_len", 1000))
-    estimator = canonicalize_estimator(getattr(method, "estimator", cfg.algo.get("estimator", "trpo_paper")))
+    estimator_name = getattr(method, "estimator", None) or cfg.algo.get("estimator") or "trpo_paper"
+    estimator = canonicalize_estimator(estimator_name)
     bootstrap_truncated_paths = bool(cfg.algo.get("bootstrap_truncated_paths", estimator != "trpo_paper"))
 
     obs_buf = shared["obs"]
@@ -100,10 +101,11 @@ def rollout_worker_loop(
                     with torch.inference_mode():
                         action_t, value_t, logp_t = method.act(obs_tensor, deterministic=False)
                     action = action_t.squeeze(0).cpu().numpy()
+                    env_action = int(action) if hasattr(env.action_space, "n") else action
                     value = float(value_t.squeeze(0).cpu().item()) if value_t.ndim > 0 else float(value_t.cpu().item())
                     logp = float(logp_t.squeeze(0).cpu().item()) if logp_t.ndim > 0 else float(logp_t.cpu().item())
 
-                    next_obs, reward, terminated, truncated, _ = env.step(action)
+                    next_obs, reward, terminated, truncated, _ = env.step(env_action)
                     next_obs = _to_preprocessed_obs(next_obs)
 
                     if ptr >= segment_capacity:

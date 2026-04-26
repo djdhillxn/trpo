@@ -3,13 +3,7 @@ from __future__ import annotations
 import argparse
 import statistics
 
-import numpy as np
-import torch
-
-from trpo_repro.config import load_config
-from trpo_repro.envs.factory import make_env
-from trpo_repro.methods import make_method, resolve_method_name
-from trpo_repro.utils.torch_utils import RunningMeanStd
+from _bootstrap import ensure_repo_root_on_path
 
 
 def parse_args():
@@ -46,6 +40,17 @@ def _preprocess_obs(obs, obs_rms):
 
 def main():
     args = parse_args()
+
+    ensure_repo_root_on_path()
+    global np, RunningMeanStd
+    import numpy as np
+    import torch
+
+    from trpo_repro.config import load_config
+    from trpo_repro.envs.factory import make_env
+    from trpo_repro.methods import make_method, resolve_method_name
+    from trpo_repro.utils.torch_utils import RunningMeanStd
+
     cfg = load_config(args.config)
     env = make_env(cfg, seed=args.seed)
     device = torch.device(args.device)
@@ -77,7 +82,8 @@ def main():
             obs_t = torch.as_tensor(obs[None, ...], dtype=torch.float32, device=device)
             action, _, _ = method.act(obs_t, deterministic=args.deterministic)
             act_np = action.squeeze(0).cpu().numpy()
-            obs, reward, terminated, truncated, _ = env.step(act_np)
+            env_action = int(act_np) if hasattr(env.action_space, "n") else act_np
+            obs, reward, terminated, truncated, _ = env.step(env_action)
             obs = _preprocess_obs(obs, obs_rms)
             ep_ret += float(reward)
             ep_len += 1

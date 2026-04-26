@@ -3,12 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import trpo_repro
-from trpo_repro.config import apply_overrides, load_config, save_config
-from trpo_repro.algos.advantages import canonicalize_estimator
-from trpo_repro.envs.factory import make_env
-from trpo_repro.runner import Runner
-from trpo_repro.utils.utils import imported_package_path, prepare_run_dir, set_seed
+from _bootstrap import ensure_repo_root_on_path
 
 
 def parse_args():
@@ -37,6 +32,15 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    ensure_repo_root_on_path()
+    import trpo_repro
+    from trpo_repro.algos.advantages import canonicalize_estimator
+    from trpo_repro.config import apply_overrides, load_config, save_config
+    from trpo_repro.envs.factory import make_env
+    from trpo_repro.runner import Runner
+    from trpo_repro.utils.utils import imported_package_path, prepare_run_dir, set_seed
+
     cfg = load_config(args.config)
     overrides = {}
     if args.seed is not None:
@@ -81,7 +85,8 @@ def main():
     save_config(cfg, output_dir / "config_resolved.yaml")
 
     resolved_method = str(cfg.get("method", {}).get("name", "trpo"))
-    resolved_estimator = canonicalize_estimator(cfg.algo.get("estimator", cfg.algo.get("advantage_mode", "mc")))
+    estimator_name = cfg.algo.get("estimator", cfg.algo.get("advantage_mode", "mc"))
+    resolved_estimator = None if estimator_name is None else canonicalize_estimator(estimator_name)
     print({
         "package_path": imported_package_path("trpo_repro"),
         "package_init": str(Path(trpo_repro.__file__).resolve()),

@@ -1,4 +1,6 @@
 inherits: seaquest_ppo_clip.yaml
+train:
+  run_name: seaquest_ppo_kl_penalty
 method:
   name: ppo
   variant: kl_penalty

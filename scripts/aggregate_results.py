@@ -5,11 +5,24 @@ import json
 from pathlib import Path
 from typing import Iterable
 
-import matplotlib.pyplot as plt
-import pandas as pd
 import yaml
 
-from trpo_repro.utils.utils import ensure_dir, slugify
+from _bootstrap import ensure_repo_root_on_path
+
+
+def _load_plot_dependencies() -> None:
+    global pd, plt
+    try:
+        import pandas as pd
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as exc:
+        raise RuntimeError(
+            "aggregate_results.py requires working pandas, matplotlib, and numpy installations. "
+            "Install the project dependencies with `python3 -m pip install -r requirements.txt`."
+        ) from exc
 
 
 _METRIC_ALIASES: dict[str, list[str]] = {
@@ -211,6 +224,11 @@ def _summary_row(label: str, env_id: str, metric: str, x_axis: str, summary: pd.
 
 def main():
     args = parse_args()
+    ensure_repo_root_on_path()
+    _load_plot_dependencies()
+
+    from trpo_repro.utils.utils import ensure_dir, slugify
+
     run_roots = [Path(p) for p in args.runs_root]
     if args.labels is not None and len(args.labels) not in {0, len(run_roots)}:
         raise ValueError("--labels must be omitted or match the number of --runs-root entries.")

@@ -260,10 +260,11 @@ class Runner:
                         obs_tensor = to_tensor(obs[None, ...], self.device, dtype=torch.float32)
                         action_t, value_t, logp_t = self.method.act(obs_tensor, deterministic=False)
                         action = action_t.squeeze(0).cpu().numpy()
+                        env_action = int(action) if hasattr(self.env.action_space, "n") else action
                         value = float(value_t.squeeze(0).cpu().item()) if value_t.ndim > 0 else float(value_t.cpu().item())
                         logp = float(logp_t.squeeze(0).cpu().item()) if logp_t.ndim > 0 else float(logp_t.cpu().item())
 
-                        next_obs, reward, terminated, truncated, _ = self.env.step(action)
+                        next_obs, reward, terminated, truncated, _ = self.env.step(env_action)
                         next_obs = self._preprocess_obs(next_obs)
 
                         if buffer is not None:

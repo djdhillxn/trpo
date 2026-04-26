@@ -1,4 +1,6 @@
 inherits: swimmer_ppo_clip.yaml
+train:
+  run_name: swimmer_ppo_kl_penalty
 method:
   name: ppo
   variant: kl_penalty
