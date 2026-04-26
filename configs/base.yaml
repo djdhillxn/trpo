@@ -9,6 +9,7 @@ train:
   memory_mode: standard
   progress_mode: auto
   obs_storage: auto
+  num_workers: 1
 
 env:
   type: mujoco

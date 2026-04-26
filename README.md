@@ -58,6 +58,17 @@ python3 scripts/train.py \
   --memory-mode standard \
   --progress-mode notebook \
   --overwrite
+
+# Parallel rollout collection on Linux / Colab
+python3 scripts/train.py \
+  --config configs/atari/seaquest_single_path.yaml \
+  --num-workers 4 \
+  --memory-mode safe \
+  --obs_storage ram \
+  --full_batch_chunk_size 8192 \
+  --device cuda \
+  --progress-mode off \
+  --overwrite
 ```
 
 ### 3) Aggregate one method over seeds
@@ -119,7 +130,7 @@ The repository is easiest to think about in four layers:
 
 1. **Config**: choose a YAML config under `configs/`
 2. **Method**: TRPO / NPG / PPO / random
-3. **Runtime mode**: memory mode, progress mode, device, chunk size, etc.
+3. **Runtime mode**: memory mode, progress mode, device, chunk size, number of rollout workers, etc.
 4. **Analysis**: aggregate seed runs, compare methods, export plots and CSV summaries
 
 Typical workflow:

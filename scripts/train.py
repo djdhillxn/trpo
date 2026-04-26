@@ -19,6 +19,7 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--num-workers", "--num_workers", "--num-cores", "--num_cores", dest="num_workers", type=int, default=None)
     parser.add_argument("--memory-mode", choices=["standard", "safe"], default=None)
     parser.add_argument("--progress-mode", choices=["auto", "terminal", "notebook", "off"], default=None)
     parser.add_argument("--obs-storage", "--obs_storage", dest="obs_storage", choices=["auto", "ram", "memmap"], default=None)
@@ -41,6 +42,8 @@ def main():
         overrides["train.memory_mode"] = args.memory_mode
     if args.progress_mode is not None:
         overrides["train.progress_mode"] = args.progress_mode
+    if args.num_workers is not None:
+        overrides["train.num_workers"] = max(1, int(args.num_workers))
     if args.obs_storage is not None:
         overrides["train.obs_storage"] = args.obs_storage
     if args.full_batch_chunk_size is not None:
@@ -68,6 +71,7 @@ def main():
         "method": resolved_method,
         "estimator": resolved_estimator,
         "seed": seed,
+        "num_workers": int(cfg.train.get("num_workers", 1)),
     })
 
     env = make_env(cfg, seed=seed)
