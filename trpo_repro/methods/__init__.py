@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import torch
 
 from trpo_repro.methods.ppo_method import PPOMethod

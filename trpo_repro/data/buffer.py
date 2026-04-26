@@ -1,6 +1,3 @@
-
-from __future__ import annotations
-
 import gc
 import os
 from pathlib import Path
