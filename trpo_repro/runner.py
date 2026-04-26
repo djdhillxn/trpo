@@ -4,22 +4,41 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from trpo_repro.config import save_config
 from trpo_repro.data.buffer import RolloutBatch, TrajectoryBuffer
 from trpo_repro.methods import make_method, resolve_method_name
 from trpo_repro.rollouts import ParallelRolloutCollector
-from trpo_repro.utils.utils import JsonlLogger, ensure_dir, get_git_commit_hash, get_tqdm, write_json
+from trpo_repro.utils.run_metadata import (
+    build_base_run_metadata,
+    build_failure_record,
+    collect_environment_metadata,
+    collect_git_metadata,
+    monotonic_time,
+    utc_now_iso,
+    write_failure,
+    write_git_diff_snapshot,
+    write_run_summary,
+)
+from trpo_repro.utils.utils import JsonlLogger, ensure_dir, get_tqdm, write_json
 from trpo_repro.utils.torch_utils import RunningMeanStd, to_tensor
 
 
 class Runner:
-    def __init__(self, env, cfg, output_dir: str | Path, device: str = "cpu") -> None:
+    def __init__(self, env, cfg, output_dir: str | Path, device: str = "cpu", launch_metadata: dict | None = None) -> None:
         self.env = env
         self.cfg = cfg
         self.output_dir = ensure_dir(output_dir)
         self.device = torch.device(device)
+        self.run_start_monotonic = monotonic_time()
         self.logger = JsonlLogger(self.output_dir, mode="w")
         self.checkpoint_dir = ensure_dir(self.output_dir / "checkpoints")
         self.buffer_dir = ensure_dir(self.output_dir / "_buffers")
+        self.completed_epochs = 0
+        self.current_epoch: int | None = None
+        self.total_env_steps = 0
+        self.latest_record: dict | None = None
+        self.best_train_return_record: dict | None = None
+        self.checkpoint_paths: list[str] = []
 
         self.method_name = resolve_method_name(cfg)
         self.method = make_method(env.observation_space, env.action_space, cfg, self.device)
@@ -87,19 +106,20 @@ class Runner:
             self.batch_obs_to_device = False
 
         suite = str(cfg.env.get("type", "unknown")).lower()
-        self.git_commit_hash = get_git_commit_hash(Path(__file__).resolve())
 
         self.fvp_estimator = str(cfg.algo.get("fvp_estimator", "analytic")).lower()
+        save_config(self.cfg, self.output_dir / "config_runtime.yaml")
 
-        self.run_metadata = {
-            "method": self.method_name,
-            "method_variant": self.method_variant,
-            "estimator": self.estimator,
-            "env_id": str(cfg.env.id),
-            "suite": suite,
-            "seed": int(cfg.train.seed),
-            "run_name": str(cfg.train.get("run_name", self.output_dir.name)),
-            "trainable": self.trainable,
+        environment_metadata = collect_environment_metadata(device=str(self.device))
+        write_json(environment_metadata, self.output_dir / "environment.json")
+        git_metadata = collect_git_metadata(Path(__file__).resolve())
+        git_diff_path = write_git_diff_snapshot(self.output_dir, Path(__file__).resolve())
+        if git_diff_path is not None:
+            git_metadata["diff_path"] = git_diff_path
+
+        runtime_metadata = {
+            "device": str(self.device),
+            "normalize_obs": self.normalize_obs,
             "memory_mode": self.memory_mode,
             "obs_storage": self.obs_storage,
             "full_batch_chunk_size": self.full_batch_chunk_size,
@@ -108,8 +128,29 @@ class Runner:
             "progress_mode": self.progress_mode,
             "num_workers": self.num_workers,
             "parallel_rollouts": self.parallel_rollouts,
-            "git_commit_hash": self.git_commit_hash,
+            "target_epochs": int(cfg.train.epochs),
+            "steps_per_epoch": int(cfg.train.steps_per_epoch),
+            "max_ep_len": int(cfg.train.get("max_ep_len", 1000)),
+            "save_interval": int(cfg.train.get("save_interval", 10)),
+            "observation_space": repr(env.observation_space),
+            "action_space": repr(env.action_space),
         }
+        self.run_metadata = build_base_run_metadata(
+            launch=launch_metadata or {},
+            environment=environment_metadata,
+            git=git_metadata,
+            method=self.method_name,
+            method_variant=self.method_variant,
+            estimator=self.estimator,
+            env_id=str(cfg.env.id),
+            suite=suite,
+            seed=int(cfg.train.seed),
+            run_name=str(cfg.train.get("run_name", self.output_dir.name)),
+            trainable=self.trainable,
+            runtime=runtime_metadata,
+        )
+        self.git_commit_hash = self.run_metadata.get("git_commit_hash")
+        self.run_metadata.update(runtime_metadata)
         write_json(self.run_metadata, self.output_dir / "run_metadata.json")
         print({
             "runner_method": self.method_name,
@@ -210,24 +251,33 @@ class Runner:
             print(record)
 
     def train(self) -> None:
-        obs, _ = self.env.reset()
-        obs = self._preprocess_obs(obs)
-        ep_ret = 0.0
-        ep_len = 0
-        episode_returns: list[float] = []
-        episode_lengths: list[float] = []
-        total_env_steps = 0
-
-        total_epochs = int(self.cfg.train.epochs)
-        target_steps = int(self.cfg.train.steps_per_epoch)
-        max_ep_len = int(self.cfg.train.get("max_ep_len", 1000))
-
-        disable_progress = self.progress_mode == "off"
-        epoch_iter = self.tqdm(range(1, total_epochs + 1), desc="Training", position=0, leave=True, disable=disable_progress)
-        save_interval = int(self.cfg.train.get("save_interval", 10))
-
+        run_status = "completed"
+        failure_record = None
         try:
+            obs, _ = self.env.reset()
+            obs = self._preprocess_obs(obs)
+            ep_ret = 0.0
+            ep_len = 0
+            episode_returns: list[float] = []
+            episode_lengths: list[float] = []
+            total_env_steps = 0
+
+            total_epochs = int(self.cfg.train.epochs)
+            target_steps = int(self.cfg.train.steps_per_epoch)
+            max_ep_len = int(self.cfg.train.get("max_ep_len", 1000))
+
+            disable_progress = self.progress_mode == "off"
+            epoch_iter = self.tqdm(
+                range(1, total_epochs + 1),
+                desc="Training",
+                position=0,
+                leave=True,
+                disable=disable_progress,
+            )
+            save_interval = int(self.cfg.train.get("save_interval", 10))
+
             for epoch in epoch_iter:
+                self.current_epoch = epoch
                 epoch_start_time = time.time()
                 self.method.set_training_progress(epoch, total_epochs)
                 steps_in_epoch = 0
@@ -239,6 +289,7 @@ class Runner:
                     batch = self._batch_from_arrays(arrays) if self.trainable else None
                     steps_in_epoch = int(arrays["batch_steps"])
                     total_env_steps += steps_in_epoch
+                    self.total_env_steps = total_env_steps
                     episode_returns = list(arrays["episode_returns"])
                     episode_lengths = list(arrays["episode_lengths"])
                 else:
@@ -271,6 +322,7 @@ class Runner:
                         ep_len += 1
                         steps_in_epoch += 1
                         total_env_steps += 1
+                        self.total_env_steps = total_env_steps
 
                         if rollout_pbar is not None and steps_in_epoch <= target_steps:
                             rollout_pbar.update(1)
@@ -363,13 +415,79 @@ class Runner:
                 }
                 self.logger.log(record)
                 self._write_epoch_record(epoch_iter, record, total_env_steps, train_return_mean)
+                self.completed_epochs = epoch
+                self.total_env_steps = total_env_steps
+                self.latest_record = record
+                if np.isfinite(train_return_mean):
+                    if (
+                        self.best_train_return_record is None
+                        or train_return_mean > float(self.best_train_return_record["train_return_mean"])
+                    ):
+                        self.best_train_return_record = {
+                            "epoch": epoch,
+                            "env_steps": int(total_env_steps),
+                            "train_return_mean": train_return_mean,
+                            "train_return_std": train_return_std,
+                            "train_len_mean": train_len_mean,
+                        }
                 episode_returns.clear()
                 episode_lengths.clear()
+        except BaseException as exc:
+            run_status = "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
+            failure_record = build_failure_record(exc, epoch=self.current_epoch)
+            try:
+                write_failure(self.output_dir, failure_record)
+            except Exception as write_exc:
+                print(f"Warning: failed to write failure metadata: {write_exc!r}")
+            raise
         finally:
+            self._finalize_run(run_status, failure_record)
             if self.collector is not None:
                 self.collector.close()
             self.logger.close()
             self.env.close()
+
+    def _finalize_run(self, status: str, failure_record: dict | None = None) -> None:
+        ended_at = utc_now_iso()
+        duration_sec = monotonic_time() - self.run_start_monotonic
+        summary = {
+            "schema_version": 1,
+            "run_id": self.run_metadata.get("run_id"),
+            "status": status,
+            "started_at": self.run_metadata.get("started_at"),
+            "ended_at": ended_at,
+            "duration_sec": duration_sec,
+            "completed_epochs": self.completed_epochs,
+            "target_epochs": int(self.cfg.train.epochs),
+            "total_env_steps": self.total_env_steps,
+            "latest_epoch_record": self.latest_record,
+            "best_train_return": self.best_train_return_record,
+            "checkpoints": self.checkpoint_paths,
+        }
+        if failure_record is not None:
+            summary["failure"] = {
+                "exception_type": failure_record["exception_type"],
+                "exception_message": failure_record["exception_message"],
+                "epoch": failure_record["epoch"],
+                "failure_path": str((self.output_dir / "failure.json").resolve()),
+            }
+        try:
+            summary_path = write_run_summary(self.output_dir, summary)
+            self.run_metadata.update(
+                {
+                    "status": status,
+                    "ended_at": ended_at,
+                    "duration_sec": duration_sec,
+                    "summary_path": str(summary_path.resolve()),
+                    "completed_epochs": self.completed_epochs,
+                    "total_env_steps": self.total_env_steps,
+                }
+            )
+            if failure_record is not None:
+                self.run_metadata["failure"] = summary["failure"]
+            write_json(self.run_metadata, self.output_dir / "run_metadata.json")
+        except Exception as exc:
+            print(f"Warning: failed to finalize run metadata: {exc!r}")
 
     def save_checkpoint(self, epoch: int) -> None:
         if not self.supports_checkpoints:
@@ -383,4 +501,6 @@ class Runner:
             "obs_rms_var": None if self.obs_rms is None else self.obs_rms.var,
             "obs_rms_count": None if self.obs_rms is None else self.obs_rms.count,
         }
-        torch.save(ckpt, self.checkpoint_dir / f"epoch_{epoch:04d}.pt")
+        checkpoint_path = self.checkpoint_dir / f"epoch_{epoch:04d}.pt"
+        torch.save(ckpt, checkpoint_path)
+        self.checkpoint_paths.append(str(checkpoint_path.resolve()))

@@ -1,4 +1,5 @@
 import argparse
+import sys
 from pathlib import Path
 
 from _bootstrap import ensure_repo_root_on_path
@@ -37,7 +38,15 @@ def main():
     from trpo_repro.config import apply_overrides, load_config, save_config
     from trpo_repro.envs.factory import make_env
     from trpo_repro.runner import Runner
-    from trpo_repro.utils.utils import imported_package_path, prepare_run_dir, set_seed
+    from trpo_repro.utils.run_metadata import (
+        build_failure_record,
+        build_launch_metadata,
+        monotonic_time,
+        utc_now_iso,
+        write_failure,
+        write_run_summary,
+    )
+    from trpo_repro.utils.utils import imported_package_path, prepare_run_dir, set_seed, write_json
 
     cfg = load_config(args.config)
     overrides = {}
@@ -81,12 +90,22 @@ def main():
     output_dir = Path(args.output_dir) if args.output_dir else Path("outputs") / run_name / f"seed_{seed}"
     output_dir = prepare_run_dir(output_dir, overwrite=args.overwrite)
     save_config(cfg, output_dir / "config_resolved.yaml")
+    package_path = imported_package_path("trpo_repro")
+    launch_metadata = build_launch_metadata(
+        argv=sys.argv,
+        cli_args=vars(args),
+        cli_overrides=overrides,
+        config_path=args.config,
+        output_dir=output_dir,
+        package_path=package_path,
+    )
+    write_json(launch_metadata, output_dir / "launch_metadata.json")
 
     resolved_method = str(cfg.get("method", {}).get("name", "trpo"))
     estimator_name = cfg.algo.get("estimator", cfg.algo.get("advantage_mode", "mc"))
     resolved_estimator = None if estimator_name is None else canonicalize_estimator(estimator_name)
     print({
-        "package_path": imported_package_path("trpo_repro"),
+        "package_path": package_path,
         "package_init": str(Path(trpo_repro.__file__).resolve()),
         "config": str(Path(args.config).resolve()),
         "output_dir": str(output_dir.resolve()),
@@ -98,8 +117,43 @@ def main():
         "npg_stepsize": float(cfg.algo.get("npg_stepsize", 0.05)),
     })
 
-    env = make_env(cfg, seed=seed)
-    runner = Runner(env=env, cfg=cfg, output_dir=output_dir, device=args.device)
+    init_started_at = utc_now_iso()
+    init_start_time = monotonic_time()
+    env = None
+    try:
+        env = make_env(cfg, seed=seed)
+        runner = Runner(env=env, cfg=cfg, output_dir=output_dir, device=args.device, launch_metadata=launch_metadata)
+    except BaseException as exc:
+        if env is not None:
+            try:
+                env.close()
+            except Exception:
+                pass
+        status = "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
+        failure_record = build_failure_record(exc, epoch=None)
+        write_failure(output_dir, failure_record)
+        write_run_summary(
+            output_dir,
+            {
+                "schema_version": 1,
+                "run_id": None,
+                "status": status,
+                "phase": "initialization",
+                "started_at": init_started_at,
+                "ended_at": utc_now_iso(),
+                "duration_sec": monotonic_time() - init_start_time,
+                "completed_epochs": 0,
+                "target_epochs": int(cfg.train.epochs),
+                "total_env_steps": 0,
+                "failure": {
+                    "exception_type": failure_record["exception_type"],
+                    "exception_message": failure_record["exception_message"],
+                    "epoch": failure_record["epoch"],
+                    "failure_path": str((output_dir / "failure.json").resolve()),
+                },
+            },
+        )
+        raise
     runner.train()
 
 

@@ -11,9 +11,15 @@ import numpy as np
 
 
 RUN_ARTIFACT_NAMES = {
+    "config_runtime.yaml",
     "metrics.csv",
     "metrics.jsonl",
     "run_metadata.json",
+    "run_summary.json",
+    "environment.json",
+    "failure.json",
+    "git_diff.patch",
+    "launch_metadata.json",
     "config_resolved.yaml",
     "checkpoints",
 }

@@ -378,8 +378,15 @@ Important files:
 | File | Meaning |
 |---|---|
 | `config_resolved.yaml` | fully resolved config after inheritance and CLI overrides |
-| `run_metadata.json` | high-level run metadata including commit hash |
+| `config_runtime.yaml` | runtime-resolved config after automatic settings such as observation storage are finalized |
+| `launch_metadata.json` | raw command, argv, CLI args, CLI overrides, config path, output path, and package path captured before environment creation |
+| `run_metadata.json` | run manifest with command, CLI overrides, method/env identity, runtime settings, Git info, and lifecycle status |
+| `environment.json` | Python/platform/package/CUDA environment snapshot |
+| `run_summary.json` | final status, duration, total steps, final epoch metrics, best return, and saved checkpoints |
+| `failure.json` | exception details and traceback, written only if a run fails or is interrupted |
+| `git_diff.patch` | tracked local code diff at launch, written only when there are tracked uncommitted changes |
 | `metrics.jsonl` | one JSON record per epoch / iteration |
+| `metrics.csv` | same epoch metrics in CSV form for aggregation |
 | `checkpoints/` | saved method checkpoints |
 | `_buffers/` | temporary memmap rollout storage (when used) |
 
