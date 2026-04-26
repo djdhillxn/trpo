@@ -46,7 +46,7 @@ class Runner:
             self.obs_storage = "memmap" if self.memory_mode == "safe" else "ram"
         configured_chunk = cfg.algo.get("full_batch_chunk_size")
         if configured_chunk is None:
-            self.full_batch_chunk_size = 2048 if self.memory_mode == "safe" and self.estimator == "trpo_paper" else None
+            self.full_batch_chunk_size = 2048 if self.memory_mode == "safe" and self.trainable and self.method_name != "ppo" else None
         else:
             configured_chunk = int(configured_chunk)
             self.full_batch_chunk_size = configured_chunk if configured_chunk > 0 else None
@@ -63,8 +63,6 @@ class Runner:
                 else:
                     raise ValueError("fvp_subsample_fraction must be in (0, 1] or a percentage in (0, 100].")
             self.fvp_subsample_fraction = configured_fvp_fraction
-        if self.memory_mode == "safe" and self.trainable and self.estimator != "trpo_paper" and self.method_name != "ppo":
-            raise ValueError("memory_mode=safe is only supported for trpo_paper TRPO/NPG and PPO training in this repo.")
         if self.memory_mode == "safe" and self.method_name in {"empirical_fim", "trpo_empirical_fim"}:
             raise ValueError("Empirical-FIM TRPO currently supports only memory_mode=standard.")
         self.cfg.train.obs_storage = self.obs_storage
@@ -85,6 +83,10 @@ class Runner:
                 "Use --obs_storage ram when enabling --num-workers."
             )
         self.collector = ParallelRolloutCollector(env, cfg) if self.parallel_rollouts else None
+
+        if self.memory_mode == "safe" and self.trainable and self.method_name != "ppo":
+            # Keep observations on CPU-backed storage in safe mode and stream them to the device in chunks.
+            self.batch_obs_to_device = False
 
         suite = str(cfg.env.get("type", "unknown")).lower()
         self.git_commit_hash = get_git_commit_hash(Path(__file__).resolve())

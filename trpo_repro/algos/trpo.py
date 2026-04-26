@@ -79,14 +79,12 @@ class TRPOAgent:
         old_logp = batch["logp"]
         chunk_size = self._chunk_size_for(batch)
 
-        if self.value_fn is not None and chunk_size is not None:
-            raise ValueError("Chunked full-batch updates are only supported for trpo_paper mode (no value function).")
         if self.fvp_estimator == "empirical" and chunk_size is not None:
             raise ValueError("Empirical FIM updates are currently supported only for standard (non-chunked) training.")
 
         if chunk_size is None:
             return self._update_standard(obs, act, ret, weight, old_logp)
-        return self._update_chunked(obs, act, weight, old_logp, chunk_size)
+        return self._update_chunked(obs, act, ret, weight, old_logp, chunk_size)
 
     def _chunk_size_for(self, batch) -> int | None:
         configured = self.cfg.algo.get("full_batch_chunk_size")
@@ -168,7 +166,7 @@ class TRPOAgent:
             policy_loss_after = self._surrogate(obs, act, weight, old_logp).item()
         return TRPOStats(old_surr, policy_loss_after, value_loss_before, value_loss_after, entropy, approx_kl, success, step_dir.norm().item())
 
-    def _update_chunked(self, obs, act, weight, old_logp, chunk_size: int) -> TRPOStats:
+    def _update_chunked(self, obs, act, ret, weight, old_logp, chunk_size: int) -> TRPOStats:
         old_policy = copy.deepcopy(self.policy).to(self.device)
         old_policy.eval()
         for param in old_policy.parameters():
@@ -176,6 +174,13 @@ class TRPOAgent:
 
         old_surr = self._surrogate_chunked(old_policy, obs, act, weight, old_logp, chunk_size)
         entropy = self._entropy_chunked(old_policy, obs, chunk_size)
+        if self.value_fn is None:
+            value_loss_before = float("nan")
+            value_loss_after = float("nan")
+        else:
+            value_loss_before = self._value_loss_chunked(obs, ret)
+            self._update_value_function_chunked(obs, ret)
+            value_loss_after = self._value_loss_chunked(obs, ret)
         g = self._policy_grad_chunked(obs, act, weight, old_logp, chunk_size)
         fvp_obs, = self._maybe_subsample_batch(obs)
         fvp = lambda v: self._fvp_chunked(old_policy, fvp_obs, v, chunk_size)
@@ -195,7 +200,7 @@ class TRPOAgent:
             raise ValueError(f"Unsupported update mode: {self.update_mode}")
         set_flat_params(self.policy, new_params)
         policy_loss_after = self._surrogate_chunked(self.policy, obs, act, weight, old_logp, chunk_size)
-        return TRPOStats(old_surr, policy_loss_after, float("nan"), float("nan"), entropy, approx_kl, success, step_dir.norm().item())
+        return TRPOStats(old_surr, policy_loss_after, value_loss_before, value_loss_after, entropy, approx_kl, success, step_dir.norm().item())
 
     def _apply_trpo_step(self, obs, act, weight, old_logp, old_dist, old_surr, gradient, step_dir, fvp_fn):
         shs = 0.5 * (step_dir * fvp_fn(step_dir)).sum()
@@ -415,3 +420,56 @@ class TRPOAgent:
                 self.vf_optimizer.zero_grad()
                 loss.backward()
                 self.vf_optimizer.step()
+
+    def _update_value_function_chunked(self, obs, ret) -> None:
+        if self.value_fn is None or self.vf_optimizer is None:
+            return
+        vf_iters = int(self.cfg.algo.get("vf_iters", 80))
+        batch_size = int(self.cfg.algo.get("vf_batch_size", self._chunk_size_for({}) or len(ret)))
+        n = len(ret)
+        for _ in range(vf_iters):
+            permutation = np.random.permutation(n)
+            for start in range(0, n, batch_size):
+                idx = permutation[start : start + batch_size]
+                idx_t = self._index_tensor(idx, ret.device)
+                obs_mb = self._obs_minibatch(obs, idx)
+                ret_mb = ret.index_select(0, idx_t)
+                loss = self._value_loss(obs_mb, ret_mb)
+                self.vf_optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                self.vf_optimizer.step()
+
+    @torch.no_grad()
+    def _value_loss_chunked(self, obs, ret) -> float:
+        if self.value_fn is None:
+            return float("nan")
+        batch_size = int(self.cfg.algo.get("vf_batch_size", self._chunk_size_for({}) or len(ret)))
+        n = len(ret)
+        total = 0.0
+        total_count = 0
+        for idx in self._iter_minibatches(n, batch_size, shuffle=False):
+            idx_t = self._index_tensor(idx, ret.device)
+            obs_mb = self._obs_minibatch(obs, idx)
+            ret_mb = ret.index_select(0, idx_t)
+            loss = self._value_loss(obs_mb, ret_mb).item()
+            count = len(idx)
+            total += loss * count
+            total_count += count
+        return total / total_count if total_count > 0 else float("nan")
+
+    @staticmethod
+    def _iter_minibatches(n: int, batch_size: int, *, shuffle: bool):
+        indices = np.random.permutation(n) if shuffle else np.arange(n)
+        for start in range(0, n, batch_size):
+            yield indices[start : start + batch_size]
+
+    @staticmethod
+    def _index_tensor(index: np.ndarray, device: torch.device) -> torch.Tensor:
+        return torch.as_tensor(index, device=device, dtype=torch.long)
+
+    def _obs_minibatch(self, obs, index: np.ndarray) -> torch.Tensor:
+        if isinstance(obs, torch.Tensor):
+            idx_t = self._index_tensor(index, obs.device)
+            batch = obs.index_select(0, idx_t)
+            return batch.to(self.device, dtype=torch.float32)
+        return to_tensor(obs[index], self.device, dtype=torch.float32)
