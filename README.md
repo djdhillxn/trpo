@@ -191,10 +191,14 @@ python3 scripts/train.py \
 
 ```bash
 python3 -m pip install -r requirements.txt
-python3 -m pip install -e .
 ```
 
-The editable install is strongly recommended so that `scripts/train.py` always imports the code from the current working tree.
+When you run the entry-point scripts from this checkout, for example `python3 scripts/train.py ...`,
+they bootstrap the repository root ahead of site-packages. That means they import the local code
+you are standing in, even if an older `trpo_repro` package is installed elsewhere.
+
+Editable install is optional and only needed if you want to import `trpo_repro` from outside the
+repository root.
 
 ---
 
