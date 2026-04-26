@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from trpo_repro.algos.advantages import discounted_cumsum
+from trpo_repro.algos.advantages import canonicalize_estimator, compute_path_targets
 from trpo_repro.config import DotDict
 from trpo_repro.envs.factory import make_env
 from trpo_repro.methods import make_method
@@ -16,32 +16,6 @@ from trpo_repro.utils.utils import set_seed
 def _to_preprocessed_obs(obs: np.ndarray) -> np.ndarray:
     return np.asarray(obs, dtype=np.float32)
 
-
-def _compute_path_targets(
-    estimator: str,
-    rewards: list[float],
-    values: list[float],
-    gamma: float,
-    lam: float,
-    last_val: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    rews = np.asarray(rewards, dtype=np.float32)
-    vals = np.asarray(values, dtype=np.float32)
-    if estimator == "paper_mc":
-        rets = discounted_cumsum(np.append(rews, np.float32(last_val)), gamma)[:-1]
-        return rets, rets.copy()
-    if estimator in {"mc", "mc_baseline"}:
-        rets = discounted_cumsum(np.append(rews, np.float32(last_val)), gamma)[:-1]
-        weights = rets - vals
-        return rets, weights.astype(np.float32, copy=False)
-    if estimator == "gae":
-        vals_ext = np.append(vals, np.float32(last_val))
-        rews_ext = np.append(rews, np.float32(last_val))
-        deltas = rews_ext[:-1] + gamma * vals_ext[1:] - vals_ext[:-1]
-        adv = discounted_cumsum(deltas.astype(np.float32, copy=False), gamma * lam)
-        rets = discounted_cumsum(rews_ext, gamma)[:-1]
-        return rets.astype(np.float32, copy=False), adv.astype(np.float32, copy=False)
-    raise ValueError(f"Unsupported estimator for parallel rollouts: {estimator}")
 
 
 def rollout_worker_loop(
@@ -73,7 +47,7 @@ def rollout_worker_loop(
     gamma = float(cfg.algo.gamma)
     lam = float(cfg.algo.get("lam", 1.0))
     max_ep_len = int(cfg.train.get("max_ep_len", 1000))
-    estimator = str(getattr(method, "estimator", cfg.algo.get("estimator", "paper_mc"))).lower()
+    estimator = canonicalize_estimator(getattr(method, "estimator", cfg.algo.get("estimator", "paper_mc")))
     bootstrap_truncated_paths = bool(cfg.algo.get("bootstrap_truncated_paths", estimator != "paper_mc"))
 
     obs_buf = shared["obs"]
@@ -156,8 +130,10 @@ def rollout_worker_loop(
                     reached_target = steps_collected >= local_target_steps
 
                     if terminal:
-                        rets, weights = _compute_path_targets(estimator, ep_rewards, ep_values, gamma, lam, last_val=0.0)
+                        rets, weights = compute_path_targets(estimator, ep_rewards, ep_values, gamma, lam, last_val=0.0)
                         idx_slice = np.asarray(ep_indices, dtype=np.int64)
+                        if len(idx_slice) != len(rets) or len(idx_slice) != len(weights):
+                            raise RuntimeError("Worker path target lengths do not match collected path length.")
                         ret_buf[idx_slice] = rets
                         weight_buf[idx_slice] = weights
                         episode_returns.append(ep_ret)
@@ -182,8 +158,10 @@ def rollout_worker_loop(
                             next_obs_tensor = torch.as_tensor(next_obs[None, ...], dtype=torch.float32)
                             with torch.inference_mode():
                                 last_val = float(method.value(next_obs_tensor).cpu().item())
-                        rets, weights = _compute_path_targets(estimator, ep_rewards, ep_values, gamma, lam, last_val=last_val)
+                        rets, weights = compute_path_targets(estimator, ep_rewards, ep_values, gamma, lam, last_val=last_val)
                         idx_slice = np.asarray(ep_indices, dtype=np.int64)
+                        if len(idx_slice) != len(rets) or len(idx_slice) != len(weights):
+                            raise RuntimeError("Worker bootstrap target lengths do not match collected path length.")
                         ret_buf[idx_slice] = rets
                         weight_buf[idx_slice] = weights
                         break

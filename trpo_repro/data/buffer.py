@@ -8,17 +8,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from trpo_repro.algos.advantages import canonicalize_estimator, compute_path_targets
+
 
 EstimatorName = str
-
-
-def discounted_cumsum(x: np.ndarray, discount: float) -> np.ndarray:
-    out = np.zeros_like(x, dtype=np.float32)
-    running = 0.0
-    for i in reversed(range(len(x))):
-        running = x[i] + discount * running
-        out[i] = running
-    return out
 
 
 class RolloutBatch(dict):
@@ -78,7 +71,7 @@ class TrajectoryBuffer:
         self.logp_buf = np.zeros(size, dtype=np.float32)
         self.gamma = gamma
         self.lam = lam
-        self.estimator = estimator.lower()
+        self.estimator = canonicalize_estimator(estimator)
         self.normalize_weights = normalize_weights
         self.ptr = 0
         self.path_start_idx = 0
@@ -97,20 +90,16 @@ class TrajectoryBuffer:
         if self.ptr == self.path_start_idx:
             return
         path_slice = slice(self.path_start_idx, self.ptr)
-        rews = np.append(self.rew_buf[path_slice], last_val)
-        vals = np.append(self.val_buf[path_slice], last_val)
-        if self.estimator == "gae":
-            deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
-            self.weight_buf[path_slice] = discounted_cumsum(deltas, self.gamma * self.lam)
-            self.ret_buf[path_slice] = discounted_cumsum(rews, self.gamma)[:-1]
-        elif self.estimator in {"mc", "mc_baseline"}:
-            self.ret_buf[path_slice] = discounted_cumsum(rews, self.gamma)[:-1]
-            self.weight_buf[path_slice] = self.ret_buf[path_slice] - self.val_buf[path_slice]
-        elif self.estimator == "paper_mc":
-            self.ret_buf[path_slice] = discounted_cumsum(rews, self.gamma)[:-1]
-            self.weight_buf[path_slice] = self.ret_buf[path_slice]
-        else:
-            raise ValueError(f"Unknown estimator mode: {self.estimator}")
+        returns, weights = compute_path_targets(
+            estimator=self.estimator,
+            rewards=self.rew_buf[path_slice],
+            values=self.val_buf[path_slice],
+            gamma=self.gamma,
+            lam=self.lam,
+            last_val=last_val,
+        )
+        self.ret_buf[path_slice] = returns
+        self.weight_buf[path_slice] = weights
         self.path_start_idx = self.ptr
 
     def get(self, device: torch.device, *, obs_to_device: bool = True) -> RolloutBatch:
