@@ -11,6 +11,7 @@ This file lists the high-value command line overrides supported by `scripts/trai
 | `--device cpu|cuda|...` | n/a | learner device |
 | `--output-dir PATH` | n/a | output directory |
 | `--overwrite` | n/a | clear and recreate output directory |
+| `--resume-from PATH` | n/a | load a saved checkpoint and continue from its next epoch |
 
 ## Method selection
 
@@ -93,4 +94,17 @@ python3 scripts/train.py \
   --device cuda \
   --progress-mode notebook \
   --overwrite
+```
+
+### Resume from a checkpoint
+
+`--epochs` is still the final target epoch. For example, resuming an Atari run
+from epoch 250 to finish at epoch 300 runs epochs 251 through 300.
+
+```bash
+python3 scripts/train.py \
+  --config outputs/pong_single_path/seed_0/config_runtime.yaml \
+  --resume-from outputs/pong_single_path/seed_0/checkpoints/epoch_0250.pt \
+  --epochs 300 \
+  --device cuda
 ```

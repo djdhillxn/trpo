@@ -1,3 +1,4 @@
+import csv
 import time
 from pathlib import Path
 
@@ -39,6 +40,7 @@ class Runner:
         self.latest_record: dict | None = None
         self.best_train_return_record: dict | None = None
         self.checkpoint_paths: list[str] = []
+        self.resume_metadata: dict | None = None
 
         self.method_name = resolve_method_name(cfg)
         self.method = make_method(env.observation_space, env.action_space, cfg, self.device)
@@ -250,25 +252,154 @@ class Runner:
         else:
             print(record)
 
+    @staticmethod
+    def _load_checkpoint_file(path: Path, device: torch.device) -> dict:
+        try:
+            checkpoint = torch.load(path, map_location=device, weights_only=False)
+        except TypeError:
+            checkpoint = torch.load(path, map_location=device)
+        if not isinstance(checkpoint, dict):
+            raise ValueError(f"Checkpoint {path} did not contain a dictionary payload.")
+        return checkpoint
+
+    @staticmethod
+    def _float_from_row(row: dict[str, str], key: str) -> float | None:
+        value = row.get(key)
+        if value in {None, "", "nan", "NaN"}:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _read_source_metrics(cls, checkpoint_path: Path, resume_epoch: int) -> tuple[dict[str, str] | None, dict | None]:
+        metrics_path = checkpoint_path.parent.parent / "metrics.csv"
+        if not metrics_path.exists():
+            return None, None
+        checkpoint_row = None
+        best_record = None
+        try:
+            with metrics_path.open("r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    raw_epoch = row.get("epoch") or row.get("iteration")
+                    if raw_epoch in {None, ""}:
+                        continue
+                    try:
+                        epoch = int(float(raw_epoch))
+                    except ValueError:
+                        continue
+                    if epoch > resume_epoch:
+                        continue
+                    train_return = cls._float_from_row(row, "train_return_mean")
+                    env_steps = cls._float_from_row(row, "env_steps")
+                    train_return_std = cls._float_from_row(row, "train_return_std")
+                    train_len_mean = cls._float_from_row(row, "train_len_mean")
+                    if train_return is not None and np.isfinite(train_return):
+                        if best_record is None or train_return > float(best_record["train_return_mean"]):
+                            best_record = {
+                                "epoch": epoch,
+                                "env_steps": 0 if env_steps is None else int(env_steps),
+                                "train_return_mean": train_return,
+                                "train_return_std": float("nan") if train_return_std is None else train_return_std,
+                                "train_len_mean": float("nan") if train_len_mean is None else train_len_mean,
+                            }
+                    if epoch == resume_epoch:
+                        checkpoint_row = row
+        except OSError:
+            return None, None
+        return checkpoint_row, best_record
+
+    def resume_from_checkpoint(self, checkpoint_path: str | Path) -> None:
+        if not self.supports_checkpoints:
+            raise ValueError(f"Method {self.method_name!r} does not support checkpoint resume.")
+
+        checkpoint_path = Path(checkpoint_path).expanduser().resolve()
+        checkpoint = self._load_checkpoint_file(checkpoint_path, self.device)
+        state = checkpoint.get("state")
+        if state is None and "policy" in checkpoint:
+            state = {"policy": checkpoint.get("policy"), "value_fn": checkpoint.get("value_fn")}
+        if state is None:
+            raise ValueError(f"Checkpoint {checkpoint_path} does not contain a method state.")
+        if not isinstance(state, dict):
+            raise ValueError(f"Checkpoint {checkpoint_path} has an unsupported method state payload.")
+
+        checkpoint_method = checkpoint.get("method_name") or state.get("method_name")
+        if checkpoint_method is not None and checkpoint_method != self.method.name:
+            raise ValueError(
+                f"Checkpoint method {checkpoint_method!r} does not match configured method {self.method.name!r}."
+            )
+        checkpoint_variant = checkpoint.get("method_variant") or state.get("method_variant")
+        if checkpoint_variant is not None and checkpoint_variant != self.method.variant:
+            raise ValueError(
+                f"Checkpoint variant {checkpoint_variant!r} does not match configured variant {self.method.variant!r}."
+            )
+
+        self.method.load_state_dict(state)
+        if self.obs_rms is not None:
+            mean = checkpoint.get("obs_rms_mean")
+            var = checkpoint.get("obs_rms_var")
+            count = checkpoint.get("obs_rms_count")
+            if mean is not None and var is not None and count is not None:
+                self.obs_rms.mean = np.asarray(mean, dtype=np.float64)
+                self.obs_rms.var = np.asarray(var, dtype=np.float64)
+                self.obs_rms.count = float(count)
+
+        resume_epoch = int(checkpoint.get("epoch", 0))
+        source_row, best_record = self._read_source_metrics(checkpoint_path, resume_epoch)
+        checkpoint_steps = checkpoint.get("total_env_steps")
+        if checkpoint_steps is None and source_row is not None:
+            checkpoint_steps = self._float_from_row(source_row, "env_steps")
+
+        self.completed_epochs = resume_epoch
+        self.current_epoch = resume_epoch
+        self.total_env_steps = 0 if checkpoint_steps is None else int(checkpoint_steps)
+        if best_record is not None:
+            self.best_train_return_record = best_record
+
+        self.resume_metadata = {
+            "checkpoint_path": str(checkpoint_path),
+            "checkpoint_epoch": resume_epoch,
+            "checkpoint_total_env_steps": self.total_env_steps,
+            "checkpoint_method": checkpoint_method,
+            "checkpoint_variant": checkpoint_variant,
+        }
+        self.run_metadata["resume"] = self.resume_metadata
+        write_json(self.run_metadata, self.output_dir / "run_metadata.json")
+        print(
+            {
+                "resumed_from": str(checkpoint_path),
+                "resume_epoch": resume_epoch,
+                "resume_total_env_steps": self.total_env_steps,
+            }
+        )
+
     def train(self) -> None:
         run_status = "completed"
         failure_record = None
         try:
+            total_epochs = int(self.cfg.train.epochs)
+            target_steps = int(self.cfg.train.steps_per_epoch)
+            max_ep_len = int(self.cfg.train.get("max_ep_len", 1000))
+            start_epoch = self.completed_epochs + 1
+            if start_epoch > total_epochs:
+                raise ValueError(
+                    f"Resume checkpoint is already at epoch {self.completed_epochs}, "
+                    f"but train.epochs is {total_epochs}. Set --epochs to the final target epoch."
+                )
+
             obs, _ = self.env.reset()
             obs = self._preprocess_obs(obs)
             ep_ret = 0.0
             ep_len = 0
             episode_returns: list[float] = []
             episode_lengths: list[float] = []
-            total_env_steps = 0
-
-            total_epochs = int(self.cfg.train.epochs)
-            target_steps = int(self.cfg.train.steps_per_epoch)
-            max_ep_len = int(self.cfg.train.get("max_ep_len", 1000))
+            total_env_steps = int(self.total_env_steps)
 
             disable_progress = self.progress_mode == "off"
             epoch_iter = self.tqdm(
-                range(1, total_epochs + 1),
+                range(start_epoch, total_epochs + 1),
                 desc="Training",
                 position=0,
                 leave=True,
@@ -464,6 +595,8 @@ class Runner:
             "best_train_return": self.best_train_return_record,
             "checkpoints": self.checkpoint_paths,
         }
+        if self.resume_metadata is not None:
+            summary["resume"] = self.resume_metadata
         if failure_record is not None:
             summary["failure"] = {
                 "exception_type": failure_record["exception_type"],
@@ -494,6 +627,7 @@ class Runner:
             return
         ckpt = {
             "epoch": epoch,
+            "total_env_steps": self.total_env_steps,
             "state": self.method.state_dict(),
             "method_name": self.method.name,
             "method_variant": self.method.variant,

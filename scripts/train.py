@@ -15,6 +15,7 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--resume-from", "--resume_from", dest="resume_from", type=str, default=None)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--steps-per-epoch", "--steps_per_epoch", dest="steps_per_epoch", type=int, default=None)
     parser.add_argument("--save-interval", "--save_interval", dest="save_interval", type=int, default=None)
@@ -27,6 +28,18 @@ def parse_args():
     parser.add_argument("--fvp-estimator", "--fvp_estimator", dest="fvp_estimator", choices=["analytic", "empirical"], default=None)
     parser.add_argument("--npg-stepsize", "--npg_stepsize", dest="npg_stepsize", type=float, default=None)
     return parser.parse_args()
+
+
+def _resume_epoch_hint(path: str | None) -> int | None:
+    if path is None:
+        return None
+    stem = Path(path).stem
+    if not stem.startswith("epoch_"):
+        return None
+    try:
+        return int(stem.removeprefix("epoch_"))
+    except ValueError:
+        return None
 
 
 def main():
@@ -87,7 +100,14 @@ def main():
     set_seed(seed)
 
     run_name = str(cfg.train.get("run_name", Path(args.config).stem))
-    output_dir = Path(args.output_dir) if args.output_dir else Path("outputs") / run_name / f"seed_{seed}"
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    elif args.resume_from:
+        resume_epoch = _resume_epoch_hint(args.resume_from)
+        resume_suffix = "resume" if resume_epoch is None else f"resume_{resume_epoch:04d}"
+        output_dir = Path("outputs") / run_name / f"seed_{seed}_{resume_suffix}"
+    else:
+        output_dir = Path("outputs") / run_name / f"seed_{seed}"
     output_dir = prepare_run_dir(output_dir, overwrite=args.overwrite)
     save_config(cfg, output_dir / "config_resolved.yaml")
     package_path = imported_package_path("trpo_repro")
@@ -123,6 +143,8 @@ def main():
     try:
         env = make_env(cfg, seed=seed)
         runner = Runner(env=env, cfg=cfg, output_dir=output_dir, device=args.device, launch_metadata=launch_metadata)
+        if args.resume_from is not None:
+            runner.resume_from_checkpoint(args.resume_from)
     except BaseException as exc:
         if env is not None:
             try:

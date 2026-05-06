@@ -1,0 +1,5 @@
+inherits: hopper_natural_pg.yaml
+train:
+  run_name: hopper_natural_pg_9x
+algo:
+  npg_stepsize: 0.135
