@@ -1,0 +1,7 @@
+{
+  "failed_at": "2026-05-04T11:26:51+00:00",
+  "epoch": 1,
+  "exception_type": "KeyboardInterrupt",
+  "exception_message": "",
+  "traceback": "Traceback (most recent call last):\n  File \"/content/trpo/trpo_repro/runner.py\", line 288, in train\n    arrays = self.collector.collect(self.method.state_dict())\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/content/trpo/trpo_repro/rollouts/manager.py\", line 135, in collect\n    result = self.result_queue.get()\n             ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/multiprocessing/queues.py\", line 103, in get\n    res = self._recv_bytes()\n          ^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/multiprocessing/connection.py\", line 216, in recv_bytes\n    buf = self._recv_bytes(maxlength)\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/multiprocessing/connection.py\", line 430, in _recv_bytes\n    buf = self._recv(4)\n          ^^^^^^^^^^^^^\n  File \"/usr/lib/python3.12/multiprocessing/connection.py\", line 395, in _recv\n    chunk = read(handle, remaining)\n            ^^^^^^^^^^^^^^^^^^^^^^^\nKeyboardInterrupt\n"
+}

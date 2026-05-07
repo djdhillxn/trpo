@@ -1,0 +1,53 @@
+{
+  "manager_status": "succeeded",
+  "return_code": 0,
+  "config_path": "configs/mujoco/walker2d_natural_pg.yaml",
+  "seed": 2,
+  "output_tag": null,
+  "run_name": "walker2d_natural_pg/seed_2",
+  "local_run_dir": "/content/trpo_runs/walker2d_natural_pg/seed_2",
+  "drive_run_dir": "/content/drive/MyDrive/Colab Notebooks/839_final/trpo_outputs/walker2d_natural_pg/seed_2",
+  "command": [
+    "/usr/bin/python3",
+    "/content/trpo/scripts/train.py",
+    "--config",
+    "configs/mujoco/walker2d_natural_pg.yaml",
+    "--seed",
+    "2",
+    "--output-dir",
+    "/content/trpo_runs/walker2d_natural_pg/seed_2",
+    "--overwrite",
+    "--num-workers",
+    "12",
+    "--memory-mode",
+    "standard",
+    "--device",
+    "cuda",
+    "--progress-mode",
+    "off",
+    "--epochs",
+    "200",
+    "--save-interval",
+    "25"
+  ],
+  "command_pretty": "/usr/bin/python3 \\\n  /content/trpo/scripts/train.py \\\n  --config \\\n  configs/mujoco/walker2d_natural_pg.yaml \\\n  --seed \\\n  2 \\\n  --output-dir \\\n  /content/trpo_runs/walker2d_natural_pg/seed_2 \\\n  --overwrite \\\n  --num-workers \\\n  12 \\\n  --memory-mode \\\n  standard \\\n  --device \\\n  cuda \\\n  --progress-mode \\\n  off \\\n  --epochs \\\n  200 \\\n  --save-interval \\\n  25",
+  "extra_args": {
+    "--num-workers": 12,
+    "--memory-mode": "standard",
+    "--device": "cuda",
+    "--progress-mode": "off",
+    "--epochs": 200,
+    "--save-interval": 25
+  },
+  "started_at_utc": "2026-05-05T18:39:36.644958+00:00",
+  "ended_at_utc": "2026-05-05T23:53:25.903299+00:00",
+  "elapsed_sec": 18829.258357524872,
+  "periodic_sync": true,
+  "sync_every_seconds": 300,
+  "best_metric": "train_return_mean",
+  "maximize_metric": true,
+  "aliases": {
+    "last_checkpoint": "/content/trpo_runs/walker2d_natural_pg/seed_2/checkpoints/last.pt",
+    "best_checkpoint": "/content/trpo_runs/walker2d_natural_pg/seed_2/checkpoints/best.pt"
+  }
+}

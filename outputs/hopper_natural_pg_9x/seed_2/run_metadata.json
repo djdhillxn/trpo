@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "status": "stitched",
+  "stitched": true,
+  "method": "natural_pg",
+  "method_variant": "trpo_paper",
+  "estimator": "trpo_paper",
+  "env_id": "Hopper-v5",
+  "suite": "mujoco",
+  "seed": 2,
+  "run_name": "hopper_natural_pg_9x_stitched",
+  "trainable": true,
+  "source_run_metadata_path": "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x_stitched/seed_2/source_run_metadata.json",
+  "resume_run_metadata_path": "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x_stitched/seed_2/resume_run_metadata.json",
+  "stitch": {
+    "source_run_dir": "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x/seed_2",
+    "resume_run_dir": "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x_resume_0075/seed_2",
+    "output_dir": "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x_stitched/seed_2",
+    "resume_epoch": 75,
+    "source_rows_kept": 75,
+    "resume_rows_kept": 125,
+    "discarded_source_rows_after_resume_epoch": 16,
+    "discarded_resume_rows_at_or_before_resume_epoch": 0,
+    "first_epoch": 1,
+    "last_epoch": 200,
+    "metric": "train_return_mean",
+    "maximize_metric": true,
+    "copied_checkpoints": [
+      "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x_stitched/seed_2/checkpoints/epoch_0025.pt",
+      "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x_stitched/seed_2/checkpoints/epoch_0050.pt",
+      "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x_stitched/seed_2/checkpoints/epoch_0075.pt",
+      "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x_stitched/seed_2/checkpoints/epoch_0100.pt",
+      "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x_stitched/seed_2/checkpoints/epoch_0125.pt",
+      "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x_stitched/seed_2/checkpoints/epoch_0150.pt",
+      "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x_stitched/seed_2/checkpoints/epoch_0175.pt",
+      "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x_stitched/seed_2/checkpoints/epoch_0200.pt"
+    ],
+    "aliases": {
+      "last_checkpoint": "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x_stitched/seed_2/checkpoints/last.pt",
+      "best_checkpoint": "/Users/dhillo/Garage/Quant/Reinforcement Learning/trpo_latest_code 2/trpo/outputs/hopper_natural_pg_9x_stitched/seed_2/checkpoints/best.pt"
+    }
+  }
+}

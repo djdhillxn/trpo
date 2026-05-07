@@ -1,0 +1,53 @@
+{
+  "manager_status": "succeeded",
+  "return_code": 0,
+  "config_path": "configs/atari/pong_ppo_clip.yaml",
+  "seed": 0,
+  "output_tag": null,
+  "run_name": "pong_ppo_clip/seed_0",
+  "local_run_dir": "/content/trpo_runs/pong_ppo_clip/seed_0",
+  "drive_run_dir": "/content/drive/MyDrive/Colab Notebooks/839_final/trpo_outputs/pong_ppo_clip/seed_0",
+  "command": [
+    "/usr/bin/python3",
+    "/content/trpo/scripts/train.py",
+    "--config",
+    "configs/atari/pong_ppo_clip.yaml",
+    "--seed",
+    "0",
+    "--output-dir",
+    "/content/trpo_runs/pong_ppo_clip/seed_0",
+    "--overwrite",
+    "--num-workers",
+    "4",
+    "--memory-mode",
+    "standard",
+    "--device",
+    "cuda",
+    "--progress-mode",
+    "auto",
+    "--epochs",
+    "300",
+    "--save-interval",
+    "25"
+  ],
+  "command_pretty": "/usr/bin/python3 \\\n  /content/trpo/scripts/train.py \\\n  --config \\\n  configs/atari/pong_ppo_clip.yaml \\\n  --seed \\\n  0 \\\n  --output-dir \\\n  /content/trpo_runs/pong_ppo_clip/seed_0 \\\n  --overwrite \\\n  --num-workers \\\n  4 \\\n  --memory-mode \\\n  standard \\\n  --device \\\n  cuda \\\n  --progress-mode \\\n  auto \\\n  --epochs \\\n  300 \\\n  --save-interval \\\n  25",
+  "extra_args": {
+    "--num-workers": 4,
+    "--memory-mode": "standard",
+    "--device": "cuda",
+    "--progress-mode": "auto",
+    "--epochs": 300,
+    "--save-interval": 25
+  },
+  "started_at_utc": "2026-04-28T01:27:50.104164+00:00",
+  "ended_at_utc": "2026-04-28T14:18:00.851630+00:00",
+  "elapsed_sec": 46210.747478723526,
+  "periodic_sync": true,
+  "sync_every_seconds": 300,
+  "best_metric": "train_return_mean",
+  "maximize_metric": true,
+  "aliases": {
+    "last_checkpoint": "/content/trpo_runs/pong_ppo_clip/seed_0/checkpoints/last.pt",
+    "best_checkpoint": "/content/trpo_runs/pong_ppo_clip/seed_0/checkpoints/best.pt"
+  }
+}
