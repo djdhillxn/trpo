@@ -1,0 +1,3 @@
+label,env_id,metric,x_axis,final_x,final_mean,final_std,best_x,best_mean,best_std,num_seeds
+TRPO,ALE/BeamRider-v5,train_return_mean,epoch,300.0,622.1408450704225,,210.0,682.2222222222222,,1
+PPO,ALE/BeamRider-v5,train_return_mean,epoch,300.0,1601.7073170731708,,283.0,1838.4444444444443,,1

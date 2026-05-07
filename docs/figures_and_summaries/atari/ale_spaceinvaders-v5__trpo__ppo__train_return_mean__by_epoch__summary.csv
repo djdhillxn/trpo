@@ -1,0 +1,3 @@
+label,env_id,metric,x_axis,final_x,final_mean,final_std,best_x,best_mean,best_std,num_seeds
+TRPO,ALE/SpaceInvaders-v5,train_return_mean,epoch,300.0,528.9453125,,275.0,539.2125984251968,,1
+PPO,ALE/SpaceInvaders-v5,train_return_mean,epoch,300.0,765.6172839506173,,278.0,848.0,,1
