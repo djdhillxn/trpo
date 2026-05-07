@@ -42,3 +42,31 @@ run sanity-check tables.
 For each plotted comparison, the `.pdf` file is the report-ready figure, the main
 `.csv` file contains the aggregated plotting data, and the `__summary.csv` file
 contains the compact table used for sanity checks and report summaries.
+
+
+## What functionalities are included in this repo
+
+- TRPO single-path training with analytic KL-Hessian / Fisher-vector products
+- Natural Policy Gradient using the same local policy geometry without line search
+- Empirical-FIM TRPO ablation path
+- PPO-Clip and PPO-KL-Penalty variants
+- Random policy baseline
+- Single-process and parallel rollout collection
+- Laptop-safe memory mode for large Atari TRPO/NPG runs
+- MuJoCo and Atari config suites
+- Checkpoint evaluation, aggregation, plotting, and report audit utilities
+- Colab-friendly notebooks for running experiments and inspecting results
+
+## Project Framing: what this repo intends to do...
+
+This repo is designed for empirical comparison rather than chasing a single
+state-of-the-art number. The completed experiments support three core use cases:
+
+1. paper-faithful single-path TRPO reproduction,
+2. controlled comparisons against NPG and empirical-FIM variants,
+3. practical PPO baselines with modern advantage estimation and minibatch updates.
+
+For the final report workflow, the intended loop is simple: run experiments,
+preserve the output folders, regenerate figures and tables from those folders,
+and keep the top-level README readable enough for a new reader to understand the
+project before diving into the manual.

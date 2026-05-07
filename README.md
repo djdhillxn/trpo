@@ -27,19 +27,6 @@ The fastest way to inspect the results is:
 - browse [`docs/figures_and_summaries/`](docs/figures_and_summaries/) for saved PDF figures and CSV summaries
 - read [`docs/instruction_manual.md`](docs/instruction_manual.md) for the full CLI reference, config inventory, and operational details
 
-## What Is Included
-
-- TRPO single-path training with analytic KL-Hessian / Fisher-vector products
-- Natural Policy Gradient using the same local policy geometry without line search
-- Empirical-FIM TRPO ablation path
-- PPO-Clip and PPO-KL-Penalty variants
-- Random policy baseline
-- Single-process and parallel rollout collection
-- Laptop-safe memory mode for large Atari TRPO/NPG runs
-- MuJoCo and Atari config suites
-- Checkpoint evaluation, aggregation, plotting, and report audit utilities
-- Colab-friendly notebooks for running experiments and inspecting results
-
 ## Repository Map
 
 | Path | Purpose |
@@ -164,20 +151,6 @@ The long-form operational documentation lives in
 detailed CLI reference, config inventory, output schemas, aggregation recipes,
 runtime notes, and paper-alignment notes while keeping this README focused on the
 public project overview.
-
-## Project Framing
-
-This repo is designed for empirical comparison rather than chasing a single
-state-of-the-art number. The completed experiments support three core use cases:
-
-1. paper-faithful single-path TRPO reproduction,
-2. controlled comparisons against NPG and empirical-FIM variants,
-3. practical PPO baselines with modern advantage estimation and minibatch updates.
-
-For the final report workflow, the intended loop is simple: run experiments,
-preserve the output folders, regenerate figures and tables from those folders,
-and keep the top-level README readable enough for a new reader to understand the
-project before diving into the manual.
 
 ## References
 
