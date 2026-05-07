@@ -1,12 +1,30 @@
 # TRPO / PPO Policy Optimization Experiments
 
-This repository is a research-oriented reinforcement learning codebase for studying
-Trust Region Policy Optimization (TRPO), Natural Policy Gradient (NPG), and
-Proximal Policy Optimization (PPO) on MuJoCo locomotion and Atari benchmarks.
+This repository contains the code, completed run artifacts, and analysis notebooks
+for an empirical comparison of Trust Region Policy Optimization (TRPO), Natural
+Policy Gradient (NPG), and Proximal Policy Optimization (PPO-Clip). The project
+focuses on reproducing the core behavior of single-path TRPO, comparing it against
+NPG and PPO baselines, and regenerating the final plots and summary tables directly
+from saved experiment outputs.
 
-The main goal is a paper-faithful TRPO reproduction with enough practical machinery
-to compare against modern first-order PPO baselines, run multi-seed experiments,
-and regenerate report-ready plots and tables from saved outputs.
+The raw run folders live in [`outputs/`](outputs/). They include metrics,
+resolved configs, launch metadata, runtime summaries, and environment snapshots.
+Large PyTorch checkpoint files are intentionally ignored by git so the public
+repository stays readable and practical to clone.
+
+## Completed Experiments
+
+| Suite | Tasks | Methods | Seeds in `outputs/` | Result artifacts |
+|---|---|---|---|---|
+| MuJoCo locomotion | `Hopper-v5`, `Swimmer-v5`, `Walker2d-v5` | TRPO, NPG, PPO-Clip | 3 seeds per method/task | training curves and CSV summaries |
+| Atari | `BeamRider-v5`, `Enduro-v5`, `Pong-v5`, `Qbert-v5`, `Seaquest-v5`, `SpaceInvaders-v5` | TRPO, PPO-Clip | 1 seed per method/game | training curves and CSV summaries |
+| Hopper NPG ablation | `Hopper-v5` | NPG 1x, 3x, and 9x step sizes, with TRPO/PPO overlay | 3 seeds per NPG variant | ablation curves and CSV summaries |
+
+The fastest way to inspect the results is:
+
+- open [`docs/aggregate_results_plots.ipynb`](docs/aggregate_results_plots.ipynb) for the notebook that regenerates the plots, tables, and run audits from `outputs/`
+- browse [`docs/figures_and_summaries/`](docs/figures_and_summaries/) for saved PDF figures and CSV summaries
+- read [`docs/instruction_manual.md`](docs/instruction_manual.md) for the full CLI reference, config inventory, and operational details
 
 ## What Is Included
 
@@ -30,11 +48,11 @@ and regenerate report-ready plots and tables from saved outputs.
 | `scripts/aggregate_results.py` | seed aggregation, plotting, report tables, run audits |
 | `configs/` | YAML experiment configs |
 | `trpo_repro/` | algorithms, methods, models, rollouts, and utilities |
-| `outputs/` | local run outputs, metrics, metadata, checkpoints |
+| `outputs/` | public run metrics, configs, metadata, summaries, and local checkpoints ignored by git |
 | `docs/instruction_manual.md` | detailed manual and CLI reference |
 | `docs/colab_runmanager.ipynb` | Colab run-management notebook |
-| `docs/aggregate_results_plots.ipynb` | plotting, EPS/PDF export, and report sanity checks |
-| `report/empirical_benchmarking.tex` | empirical report source |
+| `docs/aggregate_results_plots.ipynb` | plotting, PDF export, tables, and report sanity checks |
+| `docs/figures_and_summaries/` | saved PDF figures and CSV summaries generated from the completed runs |
 
 ## Quick Start
 
@@ -100,7 +118,7 @@ python3 scripts/aggregate_results.py \
   --labels TRPO NPG PPO \
   --metric train_return_mean \
   --x-axis epoch \
-  --formats png pdf eps \
+  --formats pdf \
   --summary
 ```
 
@@ -130,9 +148,12 @@ plots can be regenerated after the fact.
 Use `docs/aggregate_results_plots.ipynb` to:
 
 - plot training curves with seed uncertainty bands
-- save report-ready `png`, `pdf`, and `eps` figures
+- save report-ready PDF figures
 - regenerate locomotion, Atari, and NPG ablation tables
 - print hyperparameters, CUDA/runtime details, and model parameter counts
+
+Saved public-facing figures and summary CSVs are collected under
+[`docs/figures_and_summaries/`](docs/figures_and_summaries/).
 
 ## Detailed Documentation
 
