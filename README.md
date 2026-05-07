@@ -159,23 +159,11 @@ Saved public-facing figures and summary CSVs are collected under
 
 ## Detailed Documentation
 
-The long-form operational documentation now lives in:
-
-- [`docs/instruction_manual.md`](docs/instruction_manual.md)
-
-That manual preserves the detailed material formerly in this README and the old
-CLI reference, including:
-
-- full CLI flag tables
-- method and estimator variants
-- runtime, memory, progress, Fisher/FVP, and PPO scheduling controls
-- Colab workflows
-- output-file and metric inventories
-- aggregation recipes
-- config inventory
-- code map
-- paper-alignment notes
-- recommended freeze-and-run practice
+The long-form operational documentation lives in
+[`docs/instruction_manual.md`](docs/instruction_manual.md). It preserves the
+detailed CLI reference, config inventory, output schemas, aggregation recipes,
+runtime notes, and paper-alignment notes while keeping this README focused on the
+public project overview.
 
 ## Project Framing
 

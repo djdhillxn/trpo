@@ -2,6 +2,19 @@
 
 This file collects the detailed usage notes for the TRPO / PPO policy-optimization repository. It absorbs the former CLI reference content and the detailed operational sections that used to live in the top-level README. The README is intentionally shorter now; this manual keeps the gory details close at hand.
 
+## What This Manual Covers
+
+- full CLI flag tables
+- method and estimator variants
+- runtime, memory, progress, Fisher/FVP, and PPO scheduling controls
+- Colab workflows
+- output-file and metric inventories
+- aggregation recipes
+- config inventory
+- code map
+- paper-alignment notes
+- recommended freeze-and-run practice
+
 ## CLI reference for `scripts/train.py`
 
 This file lists the high-value command line overrides supported by `scripts/train.py`.
