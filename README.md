@@ -22,6 +22,7 @@ repository stays readable and practical to clone.
 
 The fastest way to inspect the results is:
 
+- start with [`docs/README.md`](docs/README.md) for the documentation and result-artifact map
 - open [`docs/aggregate_results_plots.ipynb`](docs/aggregate_results_plots.ipynb) for the notebook that regenerates the plots, tables, and run audits from `outputs/`
 - browse [`docs/figures_and_summaries/`](docs/figures_and_summaries/) for saved PDF figures and CSV summaries
 - read [`docs/instruction_manual.md`](docs/instruction_manual.md) for the full CLI reference, config inventory, and operational details
@@ -49,6 +50,7 @@ The fastest way to inspect the results is:
 | `configs/` | YAML experiment configs |
 | `trpo_repro/` | algorithms, methods, models, rollouts, and utilities |
 | `outputs/` | public run metrics, configs, metadata, summaries, and local checkpoints ignored by git |
+| `docs/README.md` | documentation overview and result-artifact workflow |
 | `docs/instruction_manual.md` | detailed manual and CLI reference |
 | `docs/colab_runmanager.ipynb` | Colab run-management notebook |
 | `docs/aggregate_results_plots.ipynb` | plotting, PDF export, tables, and report sanity checks |
