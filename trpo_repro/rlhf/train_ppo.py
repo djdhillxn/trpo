@@ -1,0 +1,169 @@
+from __future__ import annotations
+
+import itertools
+import random
+import time
+from pathlib import Path
+from typing import Any
+
+import torch
+from tqdm.auto import tqdm
+
+from trpo_repro.config import load_config, save_config
+
+from .data import build_prompt_records, load_helpsteer3_preference, save_jsonl
+from .lm_policy import FrozenCausalLM, TokenPolicyWithValue
+from .metrics import append_jsonl, write_json
+from .ppo_lm import AdaptiveKLController, LMPPOTrainer
+from .reward_model import RewardModel
+from .rollout import GenerationConfig, collect_lm_rollouts
+
+
+def _device_from_cfg(cfg: dict[str, Any]) -> torch.device:
+    name = str(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+    if name == "cuda" and not torch.cuda.is_available():
+        name = "cpu"
+    return torch.device(name)
+
+
+def _batched_cycle(records: list[dict[str, str]], batch_size: int, seed: int):
+    rng = random.Random(seed)
+    while True:
+        shuffled = list(records)
+        rng.shuffle(shuffled)
+        for start in range(0, len(shuffled), batch_size):
+            batch = shuffled[start : start + batch_size]
+            if batch:
+                yield batch
+
+
+def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None = None) -> Path:
+    cfg = load_config(config_path)
+    output_dir = Path(output_dir or cfg.train.get("output_dir", "outputs/rlhf/qwen25_05b_helpsteer3_ppo"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    save_config(cfg, output_dir / "config_resolved.yaml")
+
+    from transformers import AutoTokenizer
+
+    model_name = str(cfg.model.get("name", "Qwen/Qwen2.5-0.5B-Instruct"))
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=bool(cfg.model.get("trust_remote_code", False)))
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    seed = int(cfg.train.get("seed", 0))
+    random.seed(seed)
+    torch.manual_seed(seed)
+    device = _device_from_cfg(cfg.train)
+
+    raw_prompts = load_helpsteer3_preference(str(cfg.data.get("prompt_split", "train")))
+    prompt_records = build_prompt_records(
+        raw_prompts,
+        tokenizer,
+        max_samples=cfg.data.get("max_prompt_samples"),
+        seed=seed,
+        shuffle=True,
+    )
+    if not prompt_records:
+        raise RuntimeError("No prompts were loaded from HelpSteer3.")
+    save_jsonl(prompt_records[: min(len(prompt_records), 1000)], output_dir / "prompt_preview.jsonl")
+
+    policy = TokenPolicyWithValue.from_model_name(
+        model_name,
+        torch_dtype=str(cfg.model.get("torch_dtype", "auto")),
+        device_map=cfg.model.get("policy_device_map"),
+        load_in_4bit=bool(cfg.model.get("policy_load_in_4bit", cfg.model.get("load_in_4bit", False))),
+        load_in_8bit=bool(cfg.model.get("policy_load_in_8bit", False)),
+        lora=dict(cfg.get("lora", {})),
+        gradient_checkpointing=bool(cfg.model.get("gradient_checkpointing", True)),
+        trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
+    )
+    if cfg.model.get("policy_device_map") is None:
+        policy.to(device)
+
+    reference = FrozenCausalLM.from_model_name(
+        model_name,
+        torch_dtype=str(cfg.model.get("ref_torch_dtype", cfg.model.get("torch_dtype", "auto"))),
+        device_map=cfg.model.get("ref_device_map"),
+        load_in_4bit=bool(cfg.model.get("ref_load_in_4bit", True)),
+        load_in_8bit=bool(cfg.model.get("ref_load_in_8bit", False)),
+        trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
+    )
+    if cfg.model.get("ref_device_map") is None:
+        reference.to(device)
+
+    reward_checkpoint = Path(str(cfg.reward_model.get("checkpoint_dir")))
+    if not reward_checkpoint.exists():
+        raise FileNotFoundError(
+            f"Reward checkpoint not found: {reward_checkpoint}. Run scripts/rlhf_train_reward_model.py first."
+        )
+    reward_model = RewardModel.load_rlhf_pretrained(
+        reward_checkpoint,
+        base_model_name=model_name,
+        torch_dtype=str(cfg.reward_model.get("torch_dtype", cfg.model.get("torch_dtype", "auto"))),
+        device_map=cfg.reward_model.get("device_map"),
+        load_in_4bit=bool(cfg.reward_model.get("load_in_4bit", True)),
+        load_in_8bit=bool(cfg.reward_model.get("load_in_8bit", False)),
+        trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
+    )
+    reward_model.eval()
+    for p in reward_model.parameters():
+        p.requires_grad_(False)
+    if cfg.reward_model.get("device_map") is None:
+        reward_model.to(device)
+
+    generation = GenerationConfig(**dict(cfg.get("generation", {})))
+    ppo_trainer = LMPPOTrainer(policy, dict(cfg.get("ppo", {})))
+    kl_ctl = AdaptiveKLController(
+        init_kl_coef=float(cfg.kl.get("init_kl_coef", 0.05)),
+        target_kl=float(cfg.kl.get("target_ref_kl", 0.05)),
+        horizon=int(cfg.kl.get("horizon", 10000)),
+    )
+
+    batch_size = int(cfg.train.get("rollout_batch_size", 8))
+    total_updates = int(cfg.train.get("total_updates", 1000))
+    save_every = int(cfg.train.get("save_every", 100))
+    prompt_iter = _batched_cycle(prompt_records, batch_size, seed=seed)
+    start_time = time.time()
+
+    for update_idx in tqdm(range(1, total_updates + 1), desc="PPO updates"):
+        records = next(prompt_iter)
+        prompts = [r["prompt"] for r in records]
+        rollout = collect_lm_rollouts(
+            policy,
+            reference,
+            reward_model,
+            tokenizer,
+            prompts,
+            generation=generation,
+            kl_coef=kl_ctl.value,
+            device=device,
+            metadata=records,
+        )
+        rollout = ppo_trainer.prepare_batch(rollout)
+        stats = ppo_trainer.update(rollout, kl_coef=kl_ctl.value)
+        kl_ctl.update(stats.objective_kl, stats.num_response_tokens)
+
+        record = stats.__dict__.copy()
+        record.update({"update": update_idx, "elapsed_sec": time.time() - start_time})
+        append_jsonl(record, output_dir / "ppo_metrics.jsonl")
+
+        if update_idx == 1 or update_idx % int(cfg.train.get("sample_every", 25)) == 0:
+            sample_rows = []
+            for prompt, response, meta, score in zip(rollout.prompts or [], rollout.responses or [], rollout.metadata or [], rollout.scores):
+                sample_rows.append(
+                    {
+                        "update": update_idx,
+                        "domain": meta.get("domain", "unknown") if isinstance(meta, dict) else "unknown",
+                        "prompt": prompt,
+                        "response": response,
+                        "reward_score": float(score.item()),
+                    }
+                )
+            save_jsonl(sample_rows, output_dir / f"samples/update_{update_idx:05d}.jsonl")
+
+        if save_every > 0 and update_idx % save_every == 0:
+            policy.save_rlhf_pretrained(output_dir / f"checkpoint_{update_idx:05d}", tokenizer=tokenizer)
+
+    policy.save_rlhf_pretrained(output_dir / "checkpoint_final", tokenizer=tokenizer)
+    write_json({"total_updates": total_updates, "final_kl_coef": kl_ctl.value}, output_dir / "run_summary.json")
+    return output_dir

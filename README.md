@@ -166,3 +166,18 @@ Reference implementations:
 - OpenAI Baselines: TensorFlow implementations of PPO, TRPO, and other RL baselines. https://github.com/openai/baselines
 - Ray RLlib: scalable reinforcement-learning library with PPO and related policy-optimization implementations. https://github.com/ray-project/ray/tree/master/rllib
 - Ilya Kostrikov's `ikostrikov/pytorch-trpo`: PyTorch TRPO implementation. https://github.com/ikostrikov/pytorch-trpo
+## RLHF extension: Qwen2.5 + HelpSteer3 + token-level PPO
+
+This repository now includes an application-oriented RLHF extension under `trpo_repro/rlhf/`. It trains a HelpSteer3 preference reward model, then applies KL-controlled token-level PPO to Qwen2.5-0.5B-Instruct using LoRA adapters.
+
+See `docs/rlhf_readme.md` for the full runbook.
+
+Quick start:
+
+```bash
+pip install -r requirements-rlhf.txt
+pip install -e .
+python scripts/rlhf_train_reward_model.py --config configs/rlhf/qwen25_05b_helpsteer3_reward.yaml
+python scripts/rlhf_train_ppo.py --config configs/rlhf/qwen25_05b_helpsteer3_ppo.yaml
+python scripts/rlhf_evaluate_before_after.py --config configs/rlhf/qwen25_05b_helpsteer3_eval.yaml
+```
