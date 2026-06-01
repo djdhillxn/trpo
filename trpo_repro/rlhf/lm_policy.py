@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,15 +23,23 @@ def shifted_token_logprobs(logits: torch.Tensor, input_ids: torch.Tensor) -> tor
     return torch.gather(log_probs, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
 
 
-def response_label_mask(input_ids: torch.Tensor, attention_mask: torch.Tensor, prompt_width: int, pad_token_id: int) -> torch.Tensor:
-    """Mask over shifted labels selecting generated response tokens only."""
-    labels = input_ids[:, 1:]
-    mask = torch.zeros_like(labels, dtype=torch.bool)
-    # Response token at sequence index prompt_width is predicted by logits at
-    # prompt_width-1, hence label index prompt_width-1.
-    start = max(prompt_width - 1, 0)
-    mask[:, start:] = labels[:, start:].ne(pad_token_id) & attention_mask[:, 1:][:, start:].bool()
-    return mask
+def response_label_mask_from_lengths(input_ids: torch.Tensor, prompt_width: int, response_lengths: torch.Tensor) -> torch.Tensor:
+    """Mask shifted labels corresponding to generated response tokens.
+
+    input_ids has shape [B, L]. Token at absolute sequence position p is the
+    label predicted by logits at p-1, so its shifted-label index is p-1.
+    response_lengths gives the number of generated tokens to include per row.
+    This avoids relying on token_id != pad_id, which is unsafe when pad_token_id
+    is the same as eos_token_id, as it commonly is for decoder-only LMs.
+    """
+    if input_ids.ndim != 2:
+        raise ValueError(f"input_ids must be rank-2, got {tuple(input_ids.shape)}")
+    response_lengths = response_lengths.to(device=input_ids.device, dtype=torch.long)
+    label_width = max(input_ids.size(1) - 1, 0)
+    label_positions = torch.arange(label_width, device=input_ids.device).unsqueeze(0)
+    start = max(int(prompt_width) - 1, 0)
+    end = start + response_lengths.unsqueeze(1)
+    return (label_positions >= start) & (label_positions < end)
 
 
 class TokenPolicyWithValue(nn.Module):

@@ -1,6 +1,3 @@
-from __future__ import annotations
-
-import itertools
 import random
 import time
 from pathlib import Path
@@ -13,7 +10,14 @@ from trpo_repro.config import load_config, save_config
 
 from .data import build_prompt_records, load_helpsteer3_preference, save_jsonl
 from .lm_policy import FrozenCausalLM, TokenPolicyWithValue
-from .metrics import append_jsonl, write_json
+from .metrics import (
+    append_jsonl,
+    collect_run_metadata,
+    jsonl_to_csv,
+    read_jsonl,
+    save_metric_plots,
+    write_json,
+)
 from .ppo_lm import AdaptiveKLController, LMPPOTrainer
 from .reward_model import RewardModel
 from .rollout import GenerationConfig, collect_lm_rollouts
@@ -37,10 +41,22 @@ def _batched_cycle(records: list[dict[str, str]], batch_size: int, seed: int):
                 yield batch
 
 
+def _cuda_memory() -> dict[str, float]:
+    if not torch.cuda.is_available():
+        return {}
+    return {
+        "cuda_memory_allocated_gb": round(torch.cuda.memory_allocated() / (1024**3), 4),
+        "cuda_memory_reserved_gb": round(torch.cuda.memory_reserved() / (1024**3), 4),
+        "cuda_max_memory_allocated_gb": round(torch.cuda.max_memory_allocated() / (1024**3), 4),
+    }
+
+
 def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None = None) -> Path:
     cfg = load_config(config_path)
     output_dir = Path(output_dir or cfg.train.get("output_dir", "outputs/rlhf/qwen25_05b_helpsteer3_ppo"))
     output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "samples").mkdir(exist_ok=True)
+    (output_dir / "plots").mkdir(exist_ok=True)
     save_config(cfg, output_dir / "config_resolved.yaml")
 
     from transformers import AutoTokenizer
@@ -53,6 +69,8 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
     seed = int(cfg.train.get("seed", 0))
     random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     device = _device_from_cfg(cfg.train)
 
     raw_prompts = load_helpsteer3_preference(str(cfg.data.get("prompt_split", "train")))
@@ -66,6 +84,14 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
     if not prompt_records:
         raise RuntimeError("No prompts were loaded from HelpSteer3.")
     save_jsonl(prompt_records[: min(len(prompt_records), 1000)], output_dir / "prompt_preview.jsonl")
+    write_json(
+        collect_run_metadata(
+            run_type="rlhf_ppo",
+            config_path=config_path,
+            extra={"model_name": model_name, "num_prompt_records": len(prompt_records)},
+        ),
+        output_dir / "run_metadata.json",
+    )
 
     policy = TokenPolicyWithValue.from_model_name(
         model_name,
@@ -122,10 +148,12 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
     batch_size = int(cfg.train.get("rollout_batch_size", 8))
     total_updates = int(cfg.train.get("total_updates", 1000))
     save_every = int(cfg.train.get("save_every", 100))
+    sample_every = int(cfg.train.get("sample_every", 25))
     prompt_iter = _batched_cycle(prompt_records, batch_size, seed=seed)
     start_time = time.time()
 
-    for update_idx in tqdm(range(1, total_updates + 1), desc="PPO updates"):
+    progress = tqdm(range(1, total_updates + 1), desc="PPO updates")
+    for update_idx in progress:
         records = next(prompt_iter)
         prompts = [r["prompt"] for r in records]
         rollout = collect_lm_rollouts(
@@ -144,16 +172,30 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
         kl_ctl.update(stats.objective_kl, stats.num_response_tokens)
 
         record = stats.__dict__.copy()
-        record.update({"update": update_idx, "elapsed_sec": time.time() - start_time})
+        record.update(
+            {
+                "update": update_idx,
+                "elapsed_sec": time.time() - start_time,
+                "mean_response_tokens": float(rollout.response_mask.sum(dim=1).float().mean().item()),
+                "mean_response_chars": float(sum(len(x) for x in (rollout.responses or [])) / max(len(rollout.responses or []), 1)),
+            }
+        )
+        record.update(_cuda_memory())
         append_jsonl(record, output_dir / "ppo_metrics.jsonl")
+        progress.set_postfix(
+            reward=f"{record['reward_model_score']:.3f}",
+            kl=f"{record['objective_kl']:.4f}",
+            loss=f"{record['loss']:.3f}",
+        )
 
-        if update_idx == 1 or update_idx % int(cfg.train.get("sample_every", 25)) == 0:
+        if update_idx == 1 or (sample_every > 0 and update_idx % sample_every == 0):
             sample_rows = []
             for prompt, response, meta, score in zip(rollout.prompts or [], rollout.responses or [], rollout.metadata or [], rollout.scores):
                 sample_rows.append(
                     {
                         "update": update_idx,
                         "domain": meta.get("domain", "unknown") if isinstance(meta, dict) else "unknown",
+                        "language": meta.get("language", "unknown") if isinstance(meta, dict) else "unknown",
                         "prompt": prompt,
                         "response": response,
                         "reward_score": float(score.item()),
@@ -163,7 +205,31 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
 
         if save_every > 0 and update_idx % save_every == 0:
             policy.save_rlhf_pretrained(output_dir / f"checkpoint_{update_idx:05d}", tokenizer=tokenizer)
+            jsonl_to_csv(output_dir / "ppo_metrics.jsonl", output_dir / "ppo_metrics.csv")
 
     policy.save_rlhf_pretrained(output_dir / "checkpoint_final", tokenizer=tokenizer)
-    write_json({"total_updates": total_updates, "final_kl_coef": kl_ctl.value}, output_dir / "run_summary.json")
+    jsonl_to_csv(output_dir / "ppo_metrics.jsonl", output_dir / "ppo_metrics.csv")
+    rows = read_jsonl(output_dir / "ppo_metrics.jsonl")
+    plot_paths = save_metric_plots(
+        rows,
+        output_dir / "plots",
+        x_key="update",
+        y_keys=[
+            "reward_model_score",
+            "total_reward",
+            "objective_kl",
+            "kl_coef",
+            "approx_kl",
+            "clip_fraction",
+            "loss",
+            "policy_loss",
+            "value_loss",
+            "mean_response_tokens",
+        ],
+        prefix="ppo",
+    )
+    write_json(
+        {"total_updates": total_updates, "final_kl_coef": kl_ctl.value, "plot_paths": plot_paths},
+        output_dir / "run_summary.json",
+    )
     return output_dir

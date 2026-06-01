@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -75,9 +73,7 @@ def build_lora_config(cfg: dict[str, Any] | None):
 def load_causal_lm(load_cfg: ModelLoadConfig):
     from transformers import AutoModelForCausalLM
 
-    kwargs: dict[str, Any] = {
-        "trust_remote_code": load_cfg.trust_remote_code,
-    }
+    kwargs: dict[str, Any] = {"trust_remote_code": load_cfg.trust_remote_code}
     dtype = resolve_dtype(load_cfg.torch_dtype)
     if dtype != "auto":
         kwargs["torch_dtype"] = dtype
@@ -89,8 +85,22 @@ def load_causal_lm(load_cfg: ModelLoadConfig):
     return AutoModelForCausalLM.from_pretrained(load_cfg.model_name, **kwargs)
 
 
+def last_attended_indices(attention_mask: torch.Tensor) -> torch.Tensor:
+    """Return the absolute index of the last attended token for each row.
+
+    This works for both right- and left-padded batches. The previous implementation
+    used attention_mask.sum(dim=1)-1, which is only correct for right padding and
+    is wrong for left-padded generation batches.
+    """
+    if attention_mask.ndim != 2:
+        raise ValueError(f"attention_mask must be rank-2, got {tuple(attention_mask.shape)}")
+    positions = torch.arange(attention_mask.size(1), device=attention_mask.device).unsqueeze(0)
+    masked_positions = positions.masked_fill(~attention_mask.bool(), 0)
+    return masked_positions.max(dim=1).values.long()
+
+
 class RewardModel(nn.Module):
-    """Causal LM backbone plus scalar reward head on the last non-padding token."""
+    """Causal LM backbone plus scalar reward head on the last attended token."""
 
     def __init__(self, backbone: nn.Module, hidden_size: int) -> None:
         super().__init__()
@@ -146,9 +156,9 @@ class RewardModel(nn.Module):
             use_cache=False,
         )
         hidden = outputs.hidden_states[-1]
-        lengths = attention_mask.long().sum(dim=1).clamp_min(1) - 1
+        last_idx = last_attended_indices(attention_mask)
         batch_idx = torch.arange(input_ids.size(0), device=input_ids.device)
-        pooled = hidden[batch_idx, lengths]
+        pooled = hidden[batch_idx, last_idx]
         return self.reward_head(pooled).squeeze(-1)
 
     def trainable_parameters(self):
@@ -188,14 +198,9 @@ class RewardModel(nn.Module):
         )
         adapter_dir = checkpoint_dir / "adapter_or_model"
         if adapter_dir.exists():
-            try:
-                from peft import PeftModel
+            from peft import PeftModel
 
-                model.backbone = PeftModel.from_pretrained(model.backbone, adapter_dir)
-            except Exception:
-                # If it was a full model rather than an adapter, leave the base as is;
-                # users can still load the saved state by model-specific means.
-                pass
+            model.backbone = PeftModel.from_pretrained(model.backbone, adapter_dir)
         reward_head_path = checkpoint_dir / "reward_head.pt"
         if reward_head_path.exists():
             model.reward_head.load_state_dict(torch.load(reward_head_path, map_location="cpu"))

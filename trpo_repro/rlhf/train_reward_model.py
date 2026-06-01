@@ -1,8 +1,4 @@
-from __future__ import annotations
-
-import math
 import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +10,14 @@ from tqdm.auto import tqdm
 from trpo_repro.config import load_config, save_config
 
 from .data import build_preference_pairs, load_helpsteer3_preference, preference_pairs_to_dicts, save_jsonl
-from .metrics import append_jsonl, write_json
+from .metrics import (
+    append_jsonl,
+    collect_run_metadata,
+    jsonl_to_csv,
+    read_jsonl,
+    save_metric_plots,
+    write_json,
+)
 from .reward_model import RewardModel
 
 
@@ -78,6 +81,7 @@ def evaluate_reward_model(model: RewardModel, loader: DataLoader, device: torch.
     total_correct = 0
     total = 0
     total_margin = 0.0
+    by_domain: dict[str, dict[str, float]] = {}
     with torch.no_grad():
         for step, batch in enumerate(loader):
             if max_batches is not None and step >= max_batches:
@@ -92,18 +96,38 @@ def evaluate_reward_model(model: RewardModel, loader: DataLoader, device: torch.
             total_correct += int((diff > 0).sum().item())
             total_margin += float(diff.sum().item())
             total += int(diff.numel())
-    return {
+            domains = batch.get("domains") or ["unknown"] * int(diff.numel())
+            for domain, ok, margin in zip(domains, (diff > 0).detach().cpu().tolist(), diff.detach().cpu().tolist()):
+                stats = by_domain.setdefault(str(domain), {"correct": 0.0, "total": 0.0, "margin_sum": 0.0})
+                stats["correct"] += float(bool(ok))
+                stats["total"] += 1.0
+                stats["margin_sum"] += float(margin)
+    result = {
         "loss": total_loss / max(total, 1),
         "accuracy": total_correct / max(total, 1),
         "avg_margin": total_margin / max(total, 1),
         "num_pairs": total,
     }
+    for domain, stats in by_domain.items():
+        safe = max(stats["total"], 1.0)
+        key = domain.replace("/", "_").replace(" ", "_")
+        result[f"accuracy_domain_{key}"] = stats["correct"] / safe
+        result[f"avg_margin_domain_{key}"] = stats["margin_sum"] / safe
+    return result
+
+
+def _optimizer_step(model: RewardModel, optimizer: torch.optim.Optimizer, max_grad_norm: float) -> None:
+    if max_grad_norm > 0:
+        torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), max_grad_norm)
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
 
 
 def run_reward_training(config_path: str | Path, *, output_dir: str | Path | None = None) -> Path:
     cfg = load_config(config_path)
     output_dir = Path(output_dir or cfg.train.get("output_dir", "outputs/rlhf/qwen25_05b_helpsteer3_reward"))
     output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "plots").mkdir(exist_ok=True)
     save_config(cfg, output_dir / "config_resolved.yaml")
 
     from transformers import AutoTokenizer
@@ -113,6 +137,11 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    seed = int(cfg.train.get("seed", 0))
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
     train_raw = load_helpsteer3_preference(str(cfg.data.get("train_split", "train")))
     val_raw = load_helpsteer3_preference(str(cfg.data.get("eval_split", "validation")))
     train_pairs = build_preference_pairs(
@@ -120,17 +149,33 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
         tokenizer,
         max_samples=cfg.data.get("max_train_samples"),
         shuffle=True,
-        seed=int(cfg.train.get("seed", 0)),
+        seed=seed,
     )
     val_pairs = build_preference_pairs(
         val_raw,
         tokenizer,
         max_samples=cfg.data.get("max_eval_samples", 1000),
         shuffle=False,
-        seed=int(cfg.train.get("seed", 0)),
+        seed=seed,
     )
+    if not train_pairs:
+        raise RuntimeError("No reward-model training pairs were built from HelpSteer3.")
+    if not val_pairs:
+        raise RuntimeError("No reward-model validation pairs were built from HelpSteer3.")
     save_jsonl(preference_pairs_to_dicts(train_pairs[: min(len(train_pairs), 1000)]), output_dir / "train_pairs_preview.jsonl")
     save_jsonl(preference_pairs_to_dicts(val_pairs[: min(len(val_pairs), 1000)]), output_dir / "eval_pairs_preview.jsonl")
+    write_json(
+        collect_run_metadata(
+            run_type="rlhf_reward_model",
+            config_path=config_path,
+            extra={
+                "model_name": model_name,
+                "num_train_pairs": len(train_pairs),
+                "num_eval_pairs": len(val_pairs),
+            },
+        ),
+        output_dir / "run_metadata.json",
+    )
 
     device = _device_from_cfg(cfg.train)
     model = RewardModel.from_model_name(
@@ -169,17 +214,19 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
     )
     grad_accum = int(cfg.train.get("gradient_accumulation_steps", 8))
     max_grad_norm = float(cfg.train.get("max_grad_norm", 1.0))
-    num_epochs = int(cfg.train.get("epochs", 1))
+    num_epochs = int(cfg.train.get("epochs", 2))
     log_every = int(cfg.train.get("log_every", 10))
     eval_every = int(cfg.train.get("eval_every", 200))
     global_step = 0
     running_loss = 0.0
+    running_batches = 0
     start_time = time.time()
 
     for epoch in range(num_epochs):
         model.train()
         pbar = tqdm(train_loader, desc=f"reward epoch {epoch + 1}/{num_epochs}")
         optimizer.zero_grad(set_to_none=True)
+        pending_grads = 0
         for local_step, batch in enumerate(pbar, start=1):
             batch = _move_batch(batch, device)
             chosen = model(batch["chosen_input_ids"], batch["chosen_attention_mask"])
@@ -189,27 +236,30 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
             loss = -(weights * F.logsigmoid(diff)).mean()
             (loss / grad_accum).backward()
             running_loss += float(loss.item())
+            running_batches += 1
+            pending_grads += 1
 
-            if local_step % grad_accum == 0:
-                if max_grad_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), max_grad_norm)
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
+            if pending_grads >= grad_accum:
+                _optimizer_step(model, optimizer, max_grad_norm)
                 global_step += 1
+                pending_grads = 0
 
                 if global_step % log_every == 0:
                     record = {
                         "step": global_step,
                         "epoch": epoch + 1,
-                        "loss": running_loss / max(log_every, 1),
+                        "loss": running_loss / max(running_batches, 1),
                         "chosen_reward": float(chosen.mean().item()),
                         "rejected_reward": float(rejected.mean().item()),
+                        "reward_margin_batch": float(diff.mean().item()),
                         "accuracy_batch": float((diff > 0).float().mean().item()),
+                        "learning_rate": float(optimizer.param_groups[0]["lr"]),
                         "elapsed_sec": time.time() - start_time,
                     }
                     running_loss = 0.0
+                    running_batches = 0
                     append_jsonl(record, output_dir / "train_metrics.jsonl")
-                    pbar.set_postfix(loss=record["loss"], acc=record["accuracy_batch"])
+                    pbar.set_postfix(loss=f"{record['loss']:.4f}", acc=f"{record['accuracy_batch']:.3f}")
 
                 if eval_every > 0 and global_step % eval_every == 0:
                     eval_metrics = evaluate_reward_model(
@@ -218,11 +268,32 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
                         device,
                         max_batches=cfg.train.get("eval_max_batches", 50),
                     )
-                    eval_metrics["step"] = global_step
+                    eval_metrics.update({"step": global_step, "epoch": epoch + 1, "elapsed_sec": time.time() - start_time})
                     append_jsonl(eval_metrics, output_dir / "eval_metrics.jsonl")
                     model.train()
 
+        # Do not silently drop the last partial accumulation at epoch end.
+        if pending_grads > 0:
+            _optimizer_step(model, optimizer, max_grad_norm)
+            global_step += 1
+            pending_grads = 0
+
+        epoch_eval = evaluate_reward_model(model, val_loader, device, max_batches=cfg.train.get("eval_max_batches", 50))
+        epoch_eval.update({"step": global_step, "epoch": epoch + 1, "elapsed_sec": time.time() - start_time})
+        append_jsonl(epoch_eval, output_dir / "eval_metrics.jsonl")
+        model.save_rlhf_pretrained(output_dir / f"checkpoint_epoch_{epoch + 1:02d}", tokenizer=tokenizer)
+
     final_metrics = evaluate_reward_model(model, val_loader, device, max_batches=cfg.train.get("final_eval_max_batches"))
+    final_metrics.update({"step": global_step, "elapsed_sec": time.time() - start_time})
     write_json(final_metrics, output_dir / "final_eval_metrics.json")
     model.save_rlhf_pretrained(output_dir / "checkpoint_final", tokenizer=tokenizer)
+
+    jsonl_to_csv(output_dir / "train_metrics.jsonl", output_dir / "train_metrics.csv")
+    jsonl_to_csv(output_dir / "eval_metrics.jsonl", output_dir / "eval_metrics.csv")
+    train_rows = read_jsonl(output_dir / "train_metrics.jsonl")
+    eval_rows = read_jsonl(output_dir / "eval_metrics.jsonl")
+    plot_paths = []
+    plot_paths.extend(save_metric_plots(train_rows, output_dir / "plots", x_key="step", y_keys=["loss", "accuracy_batch", "reward_margin_batch"], prefix="reward_train"))
+    plot_paths.extend(save_metric_plots(eval_rows, output_dir / "plots", x_key="step", y_keys=["loss", "accuracy", "avg_margin"], prefix="reward_eval"))
+    write_json({"final_metrics": final_metrics, "plot_paths": plot_paths}, output_dir / "run_summary.json")
     return output_dir
