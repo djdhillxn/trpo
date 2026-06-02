@@ -41,28 +41,40 @@ data:
 
 generation:
   max_prompt_length: 768
-  max_new_tokens: 160
+  max_new_tokens: 96
   temperature: 0.7
   top_p: 0.9
   do_sample: true
+  repetition_penalty: 1.05
+  no_repeat_ngram_size: 4
 
+# Conservative RLHF settings. The previous run let this coefficient decay to
+# ~1e-6, after which the policy drifted into non-language reward hacking.
 kl:
-  init_kl_coef: 0.05
-  target_ref_kl: 0.05
+  init_kl_coef: 0.10
+  min_kl_coef: 0.05
+  max_kl_coef: 1.0
+  target_ref_kl: 0.02
   horizon: 10000
+  adaptive: true
+
+reward_shaping:
+  reward_clip_min: -5.0
+  reward_clip_max: 5.0
+  length_penalty_coef: 0.005
+  missing_eos_penalty: 0.25
 
 ppo:
-  learning_rate: 1.0e-5
+  learning_rate: 2.0e-6
   weight_decay: 0.0
-  ppo_epochs: 4
-  # A100 40GB target: increase to 6 or 8 only if peak memory is comfortably below ~32 GB.
-  minibatch_size: 4
-  clip_range: 0.2
+  ppo_epochs: 1
+  minibatch_size: 8
+  clip_range: 0.1
   value_clip_range: 0.2
   value_coef: 0.5
   entropy_coef: 0.0
   max_grad_norm: 1.0
-  target_policy_kl: 0.05
+  target_policy_kl: 0.01
   gamma: 1.0
   lam: 0.95
 
@@ -70,8 +82,8 @@ train:
   output_dir: outputs/rlhf/qwen25_05b_helpsteer3_ppo
   seed: 839
   device: cuda
-  rollout_batch_size: 16
-  total_updates: 400
+  rollout_batch_size: 24
+  total_updates: 100
   save_every: 50
   sample_every: 25
   artifact_every: 25

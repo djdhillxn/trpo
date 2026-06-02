@@ -22,6 +22,7 @@ class LMPPOStats:
     reward_model_score: float
     non_score_reward: float
     objective_kl: float
+    abs_ref_logratio: float
     total_reward: float
     value_explained_variance: float
     kl_coef: float
@@ -70,17 +71,34 @@ def normalize_advantages(advantages: torch.Tensor, mask: torch.Tensor, eps: floa
 
 
 class AdaptiveKLController:
-    def __init__(self, init_kl_coef: float = 0.05, target_kl: float = 0.05, horizon: int = 10000) -> None:
+    def __init__(
+        self,
+        init_kl_coef: float = 0.05,
+        target_kl: float = 0.05,
+        horizon: int = 10000,
+        min_kl_coef: float = 0.02,
+        max_kl_coef: float = 1.0,
+        adaptive: bool = True,
+    ) -> None:
         self.value = float(init_kl_coef)
         self.target = float(target_kl)
         self.horizon = max(1, int(horizon))
+        self.min_value = float(min_kl_coef)
+        self.max_value = float(max_kl_coef)
+        self.adaptive = bool(adaptive)
+        self.value = float(min(max(self.value, self.min_value), self.max_value))
 
     def update(self, measured_kl: float, n_steps: int) -> float:
-        if self.target <= 0:
+        # Empirical sampled log-ratio estimates can be negative on small batches,
+        # even though the true KL is non-negative in expectation.  Negative noisy
+        # estimates previously drove the KL coefficient almost to zero, allowing
+        # the LM policy to drift into non-language / reward-hacking modes.
+        if (not self.adaptive) or self.target <= 0:
             return self.value
-        proportional_error = max(min(measured_kl / self.target - 1.0, 0.2), -0.2)
+        measured = max(float(measured_kl), 0.0)
+        proportional_error = max(min(measured / self.target - 1.0, 0.2), -0.2)
         mult = 1.0 + proportional_error * float(n_steps) / float(self.horizon)
-        self.value = float(max(self.value * mult, 1e-6))
+        self.value = float(min(max(self.value * mult, self.min_value), self.max_value))
         return self.value
 
 
@@ -145,8 +163,12 @@ class LMPPOTrainer:
                 break
 
         with torch.no_grad():
-            objective_kl = masked_mean(batch.old_logprobs - batch.ref_logprobs, batch.response_mask).item()
-            non_score_reward = masked_mean(-float(kl_coef) * (batch.old_logprobs - batch.ref_logprobs), batch.response_mask).item()
+            ref_logratio = batch.old_logprobs - batch.ref_logprobs
+            objective_kl = masked_mean(ref_logratio, batch.response_mask).item()
+            # A second, non-negative-ish diagnostic used for stability checks.  It
+            # is not mathematically exact KL, but it flags large token-level drift.
+            abs_ref_logratio = masked_mean(ref_logratio.abs(), batch.response_mask).item()
+            non_score_reward = masked_mean(-float(kl_coef) * ref_logratio, batch.response_mask).item()
             total_reward = masked_mean(batch.rewards, batch.response_mask).item()
             value_ev = explained_variance(batch.values, batch.returns, batch.response_mask)
 
@@ -160,6 +182,7 @@ class LMPPOTrainer:
             reward_model_score=float(batch.scores.float().mean().item()),
             non_score_reward=float(non_score_reward),
             objective_kl=float(objective_kl),
+            abs_ref_logratio=float(abs_ref_logratio),
             total_reward=float(total_reward),
             value_explained_variance=float(value_ev),
             kl_coef=float(kl_coef),

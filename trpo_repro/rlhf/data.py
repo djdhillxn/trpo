@@ -109,11 +109,11 @@ def build_preference_pairs(
         pair = example_to_preference_pair(dict(ex), tokenizer)
         if pair is not None:
             pairs.append(pair)
-            if max_samples is not None and len(pairs) >= max_samples:
-                break
     if shuffle:
         rng = random.Random(seed)
         rng.shuffle(pairs)
+    if max_samples is not None:
+        pairs = pairs[: int(max_samples)]
     return pairs
 
 
@@ -138,11 +138,11 @@ def build_prompt_records(
                     "language": str(dict(ex).get("language", "unknown")),
                 }
             )
-            if max_samples is not None and len(records) >= max_samples:
-                break
     if shuffle:
         rng = random.Random(seed)
         rng.shuffle(records)
+    if max_samples is not None:
+        records = records[: int(max_samples)]
     return records
 
 

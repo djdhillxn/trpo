@@ -143,6 +143,9 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
         init_kl_coef=float(cfg.kl.get("init_kl_coef", 0.05)),
         target_kl=float(cfg.kl.get("target_ref_kl", 0.05)),
         horizon=int(cfg.kl.get("horizon", 10000)),
+        min_kl_coef=float(cfg.kl.get("min_kl_coef", 0.02)),
+        max_kl_coef=float(cfg.kl.get("max_kl_coef", 1.0)),
+        adaptive=bool(cfg.kl.get("adaptive", True)),
     )
 
     batch_size = int(cfg.train.get("rollout_batch_size", 8))
@@ -156,6 +159,7 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
     for update_idx in progress:
         records = next(prompt_iter)
         prompts = [r["prompt"] for r in records]
+        shaping_cfg = dict(cfg.get("reward_shaping", {}))
         rollout = collect_lm_rollouts(
             policy,
             reference,
@@ -166,6 +170,10 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
             kl_coef=kl_ctl.value,
             device=device,
             metadata=records,
+            reward_clip_min=shaping_cfg.get("reward_clip_min"),
+            reward_clip_max=shaping_cfg.get("reward_clip_max"),
+            length_penalty_coef=float(shaping_cfg.get("length_penalty_coef", 0.0)),
+            missing_eos_penalty=float(shaping_cfg.get("missing_eos_penalty", 0.0)),
         )
         rollout = ppo_trainer.prepare_batch(rollout)
         stats = ppo_trainer.update(rollout, kl_coef=kl_ctl.value)
@@ -222,6 +230,7 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
             "objective_kl",
             "kl_coef",
             "approx_kl",
+            "abs_ref_logratio",
             "clip_fraction",
             "loss",
             "policy_loss",

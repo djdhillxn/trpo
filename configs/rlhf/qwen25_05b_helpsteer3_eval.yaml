@@ -22,15 +22,19 @@ data:
 
 generation:
   max_prompt_length: 768
-  max_new_tokens: 160
+  max_new_tokens: 128
   temperature: 0.7
   top_p: 0.9
-  do_sample: true
+  do_sample: false
+  repetition_penalty: 1.05
+  no_repeat_ngram_size: 4
 
 eval:
   output_dir: outputs/rlhf/qwen25_05b_helpsteer3_eval
   device: cuda
   policy_checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_ppo/checkpoint_final
+  seed: 839
+  shuffle: true
   num_prompts: 200
   batch_size: 4
   num_demo_rows: 16

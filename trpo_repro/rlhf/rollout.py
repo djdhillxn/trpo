@@ -14,6 +14,8 @@ class GenerationConfig:
     temperature: float = 0.7
     top_p: float = 0.9
     do_sample: bool = True
+    repetition_penalty: float = 1.0
+    no_repeat_ngram_size: int = 0
 
 
 def _ensure_pad_token(tokenizer: Any) -> int:
@@ -67,6 +69,10 @@ def collect_lm_rollouts(
     kl_coef: float,
     device: torch.device | str,
     metadata: list[dict[str, Any]] | None = None,
+    reward_clip_min: float | None = None,
+    reward_clip_max: float | None = None,
+    length_penalty_coef: float = 0.0,
+    missing_eos_penalty: float = 0.0,
 ) -> LMRolloutBatch:
     """Generate responses and build an on-policy token-level PPO batch."""
     device = torch.device(device)
@@ -85,16 +91,23 @@ def collect_lm_rollouts(
     attention_mask = encoded["attention_mask"].to(device)
     prompt_width = int(input_ids.size(1))
 
-    generated = policy.generate(
+    gen_kwargs = dict(
         input_ids=input_ids,
         attention_mask=attention_mask,
         max_new_tokens=int(generation.max_new_tokens),
         do_sample=bool(generation.do_sample),
-        temperature=float(generation.temperature),
-        top_p=float(generation.top_p),
         pad_token_id=pad_id,
         eos_token_id=tokenizer.eos_token_id,
     )
+    if bool(generation.do_sample):
+        gen_kwargs["temperature"] = float(generation.temperature)
+        gen_kwargs["top_p"] = float(generation.top_p)
+    if float(generation.repetition_penalty) != 1.0:
+        gen_kwargs["repetition_penalty"] = float(generation.repetition_penalty)
+    if int(generation.no_repeat_ngram_size) > 0:
+        gen_kwargs["no_repeat_ngram_size"] = int(generation.no_repeat_ngram_size)
+
+    generated = policy.generate(**gen_kwargs)
 
     response_ids = generated[:, prompt_width:]
     response_lengths = _response_lengths(response_ids, tokenizer)
@@ -111,15 +124,31 @@ def collect_lm_rollouts(
         if tensor.shape != expected_shape:
             raise RuntimeError(f"{name} shape {tuple(tensor.shape)} does not match response_mask {tuple(expected_shape)}")
 
-    scores = reward_model(generated, full_attention).detach().float()
+    raw_scores = reward_model(generated, full_attention).detach().float()
+    scores = raw_scores
+    if reward_clip_min is not None or reward_clip_max is not None:
+        min_v = -float("inf") if reward_clip_min is None else float(reward_clip_min)
+        max_v = float("inf") if reward_clip_max is None else float(reward_clip_max)
+        scores = scores.clamp(min=min_v, max=max_v)
+
+    eos_ids = _eos_token_ids(tokenizer)
+    hit_eos = torch.zeros_like(response_lengths, dtype=torch.bool)
+    if eos_ids:
+        eos_tensor = torch.tensor(sorted(eos_ids), device=response_ids.device, dtype=response_ids.dtype)
+        hit_eos = (response_ids.unsqueeze(-1) == eos_tensor.view(1, 1, -1)).any(dim=-1).any(dim=1)
+
+    terminal_scores = scores - float(length_penalty_coef) * response_lengths.float()
+    if float(missing_eos_penalty) != 0.0:
+        terminal_scores = terminal_scores - float(missing_eos_penalty) * (~hit_eos).float()
+
     kl_per_token = old_logprobs.float() - ref_logprobs.float()
     rewards = (-float(kl_coef) * kl_per_token) * resp_mask.float()
 
-    # Add terminal reward-model score to the final generated token of each sequence.
+    # Add shaped terminal reward to the final generated token of each sequence.
     for i in range(generated.size(0)):
         positions = torch.nonzero(resp_mask[i], as_tuple=False).flatten()
         if positions.numel() > 0:
-            rewards[i, positions[-1]] += scores[i]
+            rewards[i, positions[-1]] += terminal_scores[i]
 
     decoded_responses: list[str] = []
     for ids, keep in zip(response_ids, response_lengths.tolist()):
@@ -133,7 +162,7 @@ def collect_lm_rollouts(
         ref_logprobs=ref_logprobs.detach(),
         values=values.detach(),
         rewards=rewards.detach(),
-        scores=scores.detach(),
+        scores=raw_scores.detach(),
         prompts=list(prompts),
         responses=decoded_responses,
         metadata=metadata,

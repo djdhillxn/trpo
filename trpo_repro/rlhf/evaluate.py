@@ -64,7 +64,13 @@ def run_before_after_eval(config_path: str | Path, *, output_dir: str | Path | N
     device = _device_from_cfg(cfg.eval)
 
     raw = load_helpsteer3_preference(str(cfg.data.get("eval_split", "validation")))
-    records = build_prompt_records(raw, tokenizer, max_samples=int(cfg.eval.get("num_prompts", 100)), shuffle=False)
+    records = build_prompt_records(
+        raw,
+        tokenizer,
+        max_samples=int(cfg.eval.get("num_prompts", 100)),
+        seed=int(cfg.eval.get("seed", 839)),
+        shuffle=bool(cfg.eval.get("shuffle", True)),
+    )
     prompts = [r["prompt"] for r in records]
 
     base_policy = _load_policy_or_base(cfg, None, device)
