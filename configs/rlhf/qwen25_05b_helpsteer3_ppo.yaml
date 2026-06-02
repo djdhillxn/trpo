@@ -3,8 +3,6 @@ model:
   torch_dtype: bfloat16
   trust_remote_code: false
   gradient_checkpointing: false
-  # PPO now starts from the SFT warm-start and uses that same SFT checkpoint as
-  # the frozen reference policy, which matches the standard RLHF setup.
   policy_init_checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_sft/checkpoint_final
   ref_checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_sft/checkpoint_final
   policy_device_map: null
@@ -22,17 +20,9 @@ lora:
   lora_dropout: 0.05
   bias: none
   task_type: CAUSAL_LM
-  target_modules:
-    - q_proj
-    - k_proj
-    - v_proj
-    - o_proj
-    - gate_proj
-    - up_proj
-    - down_proj
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
 
 reward_model:
-  # Use the best validation checkpoint, not necessarily the final epoch.
   checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_reward/checkpoint_best
   torch_dtype: bfloat16
   device_map: null
@@ -41,46 +31,53 @@ reward_model:
 
 data:
   prompt_split: train
+  # Keep this null for the full run. For a smoke test, set to 2000.
   max_prompt_samples: null
 
 generation:
   max_prompt_length: 768
-  max_new_tokens: 128
-  temperature: 0.9
-  top_p: 0.95
+  max_new_tokens: 96
+  # EOS-collapse guard: do not let PPO learn the empty answer shortcut.
+  min_new_tokens: 24
+  temperature: 0.8
+  top_p: 0.9
   do_sample: true
-  repetition_penalty: 1.03
+  repetition_penalty: 1.02
   no_repeat_ngram_size: 3
 
 kl:
-  init_kl_coef: 0.03
-  min_kl_coef: 0.01
-  max_kl_coef: 0.30
-  target_ref_kl: 0.05
-  horizon: 30000
+  # Stronger anchoring than the failed group-relative run. The previous run had
+  # abs_ref_logratio ~23 at the end, which means the policy left the reference.
+  init_kl_coef: 0.10
+  min_kl_coef: 0.10
+  max_kl_coef: 1.00
+  target_ref_kl: 0.02
+  horizon: 10000
   adaptive: true
 
 reward_shaping:
   reward_clip_min: -5.0
   reward_clip_max: 5.0
-  # With group-relative rewards, avoid length-heavy manual shaping. Keep this
-  # small so it only discourages rambling, not helpful detail.
-  length_penalty_coef: 0.001
-  missing_eos_penalty: 0.05
-  group_normalize: true
+  length_penalty_coef: 0.0
+  missing_eos_penalty: 0.0
+  min_response_tokens: 24
+  short_response_penalty: 0.5
+  # Disabled for now. The prior group-relative + critic hybrid over-rewarded
+  # short/eos completions and collapsed to blank outputs.
+  group_normalize: false
   group_advantage_eps: 1.0e-6
 
 ppo:
-  learning_rate: 1.0e-6
+  learning_rate: 5.0e-7
   weight_decay: 0.0
-  ppo_epochs: 2
+  ppo_epochs: 1
   minibatch_size: 8
-  clip_range: 0.1
+  clip_range: 0.08
   value_clip_range: 0.2
-  value_coef: 0.2
-  entropy_coef: 0.0
-  max_grad_norm: 1.0
-  target_policy_kl: 0.02
+  value_coef: 0.1
+  entropy_coef: 0.001
+  max_grad_norm: 0.5
+  target_policy_kl: 0.01
   gamma: 1.0
   lam: 0.95
 
@@ -88,11 +85,15 @@ train:
   output_dir: outputs/rlhf/qwen25_05b_helpsteer3_ppo
   seed: 839
   device: cuda
-  # rollout_batch_size is now prompts per update. Actual generated sequences per
-  # update = rollout_batch_size * num_generations_per_prompt.
-  rollout_batch_size: 8
-  num_generations_per_prompt: 4
-  total_updates: 500
+  rollout_batch_size: 16
+  num_generations_per_prompt: 1
+  total_updates: 250
   save_every: 50
-  sample_every: 25
-  artifact_every: 25
+  sample_every: 10
+  artifact_every: 10
+
+safety:
+  start_after_updates: 10
+  max_abs_ref_logratio: 2.0
+  min_mean_response_tokens: 16
+  max_empty_response_rate: 0.05

@@ -211,6 +211,8 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
             reward_clip_max=shaping_cfg.get("reward_clip_max"),
             length_penalty_coef=float(shaping_cfg.get("length_penalty_coef", 0.0)),
             missing_eos_penalty=float(shaping_cfg.get("missing_eos_penalty", 0.0)),
+            min_response_tokens=int(shaping_cfg.get("min_response_tokens", 0)),
+            short_response_penalty=float(shaping_cfg.get("short_response_penalty", 0.0)),
             group_size=group_size,
             group_normalize=bool(shaping_cfg.get("group_normalize", False)),
             group_advantage_eps=float(shaping_cfg.get("group_advantage_eps", 1e-6)),
@@ -219,13 +221,18 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
         stats = ppo_trainer.update(rollout, kl_coef=kl_ctl.value)
         kl_ctl.update(stats.objective_kl, stats.num_response_tokens)
 
+        response_lengths = rollout.response_mask.sum(dim=1).float()
+        responses = rollout.responses or []
+        empty_response_rate = float(sum(1 for x in responses if not str(x).strip()) / max(len(responses), 1))
         record = stats.__dict__.copy()
         record.update(
             {
                 "update": update_idx,
                 "elapsed_sec": time.time() - start_time,
-                "mean_response_tokens": float(rollout.response_mask.sum(dim=1).float().mean().item()),
-                "mean_response_chars": float(sum(len(x) for x in (rollout.responses or [])) / max(len(rollout.responses or []), 1)),
+                "mean_response_tokens": float(response_lengths.mean().item()),
+                "min_response_tokens": float(response_lengths.min().item()),
+                "empty_response_rate": empty_response_rate,
+                "mean_response_chars": float(sum(len(x) for x in responses) / max(len(responses), 1)),
             }
         )
         record.update(_cuda_memory())
@@ -235,8 +242,35 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
         progress.set_postfix(
             reward=f"{record['reward_model_score']:.3f}",
             kl=f"{record['objective_kl']:.4f}",
+            tok=f"{record['mean_response_tokens']:.1f}",
             loss=f"{record['loss']:.3f}",
         )
+
+        safety_cfg = dict(cfg.get("safety", {}))
+        safety_start = int(safety_cfg.get("start_after_updates", 10))
+        stop_reason = None
+        if update_idx >= safety_start:
+            max_ref_kl = safety_cfg.get("max_abs_ref_logratio")
+            min_mean_tokens = safety_cfg.get("min_mean_response_tokens")
+            max_empty_rate = safety_cfg.get("max_empty_response_rate")
+            if max_ref_kl is not None and float(record["abs_ref_logratio"]) > float(max_ref_kl):
+                stop_reason = f"abs_ref_logratio {record['abs_ref_logratio']:.4f} exceeded {float(max_ref_kl):.4f}"
+            if min_mean_tokens is not None and float(record["mean_response_tokens"]) < float(min_mean_tokens):
+                stop_reason = f"mean_response_tokens {record['mean_response_tokens']:.4f} fell below {float(min_mean_tokens):.4f}"
+            if max_empty_rate is not None and float(record["empty_response_rate"]) > float(max_empty_rate):
+                stop_reason = f"empty_response_rate {record['empty_response_rate']:.4f} exceeded {float(max_empty_rate):.4f}"
+        if stop_reason is not None:
+            write_json(
+                {
+                    "status": "stopped_by_safety_guard",
+                    "stop_update": update_idx,
+                    "stop_reason": stop_reason,
+                    "final_kl_coef": kl_ctl.value,
+                },
+                output_dir / "run_status.json",
+            )
+            print(f"Stopping PPO early: {stop_reason}")
+            break
 
         if update_idx == 1 or (sample_every > 0 and update_idx % sample_every == 0):
             sample_rows = []
@@ -276,11 +310,12 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
             "policy_loss",
             "value_loss",
             "mean_response_tokens",
+            "empty_response_rate",
         ],
         prefix="ppo",
     )
     write_json(
-        {"total_updates": total_updates, "final_kl_coef": kl_ctl.value, "plot_paths": plot_paths},
+        {"total_updates_requested": total_updates, "total_updates_completed": len(rows), "final_kl_coef": kl_ctl.value, "plot_paths": plot_paths},
         output_dir / "run_summary.json",
     )
     return output_dir

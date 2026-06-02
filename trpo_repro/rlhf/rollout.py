@@ -11,6 +11,7 @@ from .ppo_buffer import LMRolloutBatch
 class GenerationConfig:
     max_prompt_length: int = 512
     max_new_tokens: int = 128
+    min_new_tokens: int = 0
     temperature: float = 0.7
     top_p: float = 0.9
     do_sample: bool = True
@@ -73,6 +74,8 @@ def collect_lm_rollouts(
     reward_clip_max: float | None = None,
     length_penalty_coef: float = 0.0,
     missing_eos_penalty: float = 0.0,
+    min_response_tokens: int = 0,
+    short_response_penalty: float = 0.0,
     group_size: int = 1,
     group_normalize: bool = False,
     group_advantage_eps: float = 1e-6,
@@ -102,6 +105,8 @@ def collect_lm_rollouts(
         pad_token_id=pad_id,
         eos_token_id=tokenizer.eos_token_id,
     )
+    if int(getattr(generation, "min_new_tokens", 0)) > 0:
+        gen_kwargs["min_new_tokens"] = int(generation.min_new_tokens)
     if bool(generation.do_sample):
         gen_kwargs["temperature"] = float(generation.temperature)
         gen_kwargs["top_p"] = float(generation.top_p)
@@ -143,6 +148,9 @@ def collect_lm_rollouts(
     terminal_scores = scores - float(length_penalty_coef) * response_lengths.float()
     if float(missing_eos_penalty) != 0.0:
         terminal_scores = terminal_scores - float(missing_eos_penalty) * (~hit_eos).float()
+    if int(min_response_tokens) > 0 and float(short_response_penalty) != 0.0:
+        shortfall = (int(min_response_tokens) - response_lengths.float()).clamp_min(0.0)
+        terminal_scores = terminal_scores - float(short_response_penalty) * shortfall / float(max(int(min_response_tokens), 1))
 
     # Optional group-relative reward baseline.  With one sample per prompt,
     # sequence-level rewards are heavily confounded by prompt/domain difficulty.

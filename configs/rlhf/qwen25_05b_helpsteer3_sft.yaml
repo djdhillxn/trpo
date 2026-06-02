@@ -32,13 +32,13 @@ train:
   output_dir: outputs/rlhf/qwen25_05b_helpsteer3_sft
   seed: 839
   device: cuda
-  # This is a warm-start, not the main alignment step. One clean pass over
-  # chosen HelpSteer3 responses is usually enough to put the policy on the
-  # same distribution as the reward model before PPO starts.
-  epochs: 1
+  # This is a warm-start, not the main alignment step. After the prompt
+  # sanitization fix, use two clean passes to put the policy closer to the
+  # HelpSteer3 chosen-response distribution before PPO starts.
+  epochs: 2
   batch_size: 8
   gradient_accumulation_steps: 2
-  learning_rate: 1.0e-5
+  learning_rate: 8.0e-6
   weight_decay: 0.0
   max_grad_norm: 1.0
   warmup_steps: 50

@@ -1,4 +1,5 @@
 from typing import Any
+import re
 
 
 ROLE_ALIASES = {
@@ -8,6 +9,9 @@ ROLE_ALIASES = {
     "bot": "assistant",
     "system": "system",
 }
+
+_CHAT_START_RE = re.compile(r"<\|im_start\|>\s*(system|user|assistant)\s*", re.IGNORECASE)
+_CHAT_END = "<|im_end|>"
 
 
 def _stringify_content(value: Any) -> str:
@@ -29,6 +33,41 @@ def _stringify_content(value: Any) -> str:
     return str(value)
 
 
+def _parse_embedded_qwen_chat(text: str) -> list[dict[str, str]] | None:
+    """Parse strings that already contain Qwen-style chat markers.
+
+    Some HelpSteer3 rows are OpenAI-message-like, but a small subset contains
+    already-rendered chat text inside a message `content` field.  If we wrap that
+    raw text inside a new user message, the final prompt can accidentally include
+    an assistant answer before the generation point, e.g.:
+
+        <|im_start|>user ... <|im_end|><|im_start|>assistant old answer ...
+
+    That poisons SFT/RM/PPO prompts.  This parser recovers the embedded turns so
+    strip_trailing_assistant can remove any existing final assistant answer.
+    """
+    if "<|im_start|>" not in text:
+        return None
+    matches = list(_CHAT_START_RE.finditer(text))
+    if not matches:
+        return None
+    messages: list[dict[str, str]] = []
+    for i, match in enumerate(matches):
+        role = ROLE_ALIASES.get(match.group(1).lower(), match.group(1).lower())
+        content_start = match.end()
+        next_start = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        chunk = text[content_start:next_start]
+        end_idx = chunk.find(_CHAT_END)
+        if end_idx >= 0:
+            chunk = chunk[:end_idx]
+        content = chunk.strip()
+        if content:
+            messages.append({"role": role, "content": content})
+        elif role in {"system", "user"}:
+            messages.append({"role": role, "content": ""})
+    return messages or None
+
+
 def normalize_messages(context: Any) -> list[dict[str, str]]:
     """Normalize HelpSteer-style context objects into OpenAI/Qwen chat messages.
 
@@ -37,6 +76,7 @@ def normalize_messages(context: Any) -> list[dict[str, str]]:
     - list[{"from": ..., "value": ...}]
     - string prompt
     - dict with context/messages/conversation key
+    - strings that already contain Qwen `<|im_start|>` chat markers
     """
     if isinstance(context, dict):
         for key in ("messages", "context", "conversation", "conversations", "turns"):
@@ -44,17 +84,33 @@ def normalize_messages(context: Any) -> list[dict[str, str]]:
                 return normalize_messages(context[key])
         # Last-resort single user prompt from dict content-ish fields.
         text = context.get("content") or context.get("prompt") or context.get("value") or str(context)
-        return [{"role": "user", "content": _stringify_content(text)}]
+        text = _stringify_content(text).strip()
+        parsed = _parse_embedded_qwen_chat(text)
+        if parsed is not None:
+            return parsed
+        return [{"role": "user", "content": text}]
 
     if isinstance(context, str):
-        return [{"role": "user", "content": context.strip()}]
+        text = context.strip()
+        parsed = _parse_embedded_qwen_chat(text)
+        if parsed is not None:
+            return parsed
+        return [{"role": "user", "content": text}]
 
     if not isinstance(context, list):
-        return [{"role": "user", "content": _stringify_content(context).strip()}]
+        text = _stringify_content(context).strip()
+        parsed = _parse_embedded_qwen_chat(text)
+        if parsed is not None:
+            return parsed
+        return [{"role": "user", "content": text}]
 
     messages: list[dict[str, str]] = []
     for idx, item in enumerate(context):
         if isinstance(item, str):
+            parsed = _parse_embedded_qwen_chat(item)
+            if parsed is not None:
+                messages.extend(parsed)
+                continue
             role = "user" if idx % 2 == 0 else "assistant"
             content = item
         elif isinstance(item, dict):
@@ -63,11 +119,17 @@ def normalize_messages(context: Any) -> list[dict[str, str]]:
             content = item.get("content")
             if content is None:
                 content = item.get("value") or item.get("text") or item.get("message")
+            content_str = _stringify_content(content).strip()
+            parsed = _parse_embedded_qwen_chat(content_str)
+            if parsed is not None:
+                messages.extend(parsed)
+                continue
+            content = content_str
         else:
             role = "user" if idx % 2 == 0 else "assistant"
             content = item
         content_str = _stringify_content(content).strip()
-        if content_str:
+        if content_str or role in {"system", "user"}:
             messages.append({"role": role, "content": content_str})
 
     # Qwen chat templates are happiest when the last message before generation is
@@ -77,15 +139,18 @@ def normalize_messages(context: Any) -> list[dict[str, str]]:
 
 
 def strip_trailing_assistant(messages: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Remove a final assistant turn if present.
+    """Remove final assistant turns if present.
 
     Preference datasets sometimes put the candidate answer in the context. For
     reward modeling and PPO prompting, we want context ending before the compared
-    assistant response.
+    assistant response.  We remove all trailing assistant turns defensively because
+    embedded raw chat strings can contain an assistant answer followed by whitespace
+    but no explicit closing marker.
     """
-    if messages and messages[-1].get("role") == "assistant":
-        return messages[:-1]
-    return messages
+    out = list(messages)
+    while out and out[-1].get("role") == "assistant":
+        out = out[:-1]
+    return out
 
 
 def render_prompt(tokenizer: Any, context: Any, *, add_generation_prompt: bool = True) -> str:
