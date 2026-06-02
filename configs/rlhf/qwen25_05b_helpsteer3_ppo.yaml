@@ -2,15 +2,14 @@ model:
   name: Qwen/Qwen2.5-0.5B-Instruct
   torch_dtype: bfloat16
   trust_remote_code: false
-  gradient_checkpointing: true
-  # Policy is trainable through LoRA. 4-bit is the Colab-friendly default.
+  gradient_checkpointing: false
+  # A100 40GB profile: full BF16 models are faster than 4-bit here.
   policy_device_map: null
-  policy_load_in_4bit: true
+  policy_load_in_4bit: false
   policy_load_in_8bit: false
-  # Reference is frozen; loading it in 4-bit saves memory.
   ref_device_map: null
   ref_torch_dtype: bfloat16
-  ref_load_in_4bit: true
+  ref_load_in_4bit: false
   ref_load_in_8bit: false
 
 lora:
@@ -33,16 +32,16 @@ reward_model:
   checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_reward/checkpoint_final
   torch_dtype: bfloat16
   device_map: null
-  load_in_4bit: true
+  load_in_4bit: false
   load_in_8bit: false
 
 data:
   prompt_split: train
-  max_prompt_samples: 12000
+  max_prompt_samples: 24000
 
 generation:
-  max_prompt_length: 512
-  max_new_tokens: 128
+  max_prompt_length: 768
+  max_new_tokens: 160
   temperature: 0.7
   top_p: 0.9
   do_sample: true
@@ -56,7 +55,8 @@ ppo:
   learning_rate: 1.0e-5
   weight_decay: 0.0
   ppo_epochs: 4
-  minibatch_size: 2
+  # A100 40GB target: increase to 6 or 8 only if peak memory is comfortably below ~32 GB.
+  minibatch_size: 4
   clip_range: 0.2
   value_clip_range: 0.2
   value_coef: 0.5
@@ -70,7 +70,8 @@ train:
   output_dir: outputs/rlhf/qwen25_05b_helpsteer3_ppo
   seed: 839
   device: cuda
-  rollout_batch_size: 4
-  total_updates: 300
+  rollout_batch_size: 16
+  total_updates: 400
   save_every: 50
   sample_every: 25
+  artifact_every: 25

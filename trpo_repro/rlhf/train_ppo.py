@@ -182,6 +182,8 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
         )
         record.update(_cuda_memory())
         append_jsonl(record, output_dir / "ppo_metrics.jsonl")
+        if int(cfg.train.get("artifact_every", 25)) > 0 and update_idx % int(cfg.train.get("artifact_every", 25)) == 0:
+            jsonl_to_csv(output_dir / "ppo_metrics.jsonl", output_dir / "ppo_metrics.csv")
         progress.set_postfix(
             reward=f"{record['reward_model_score']:.3f}",
             kl=f"{record['objective_kl']:.4f}",

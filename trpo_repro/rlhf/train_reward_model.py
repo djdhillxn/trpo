@@ -72,7 +72,44 @@ def _device_from_cfg(cfg: dict[str, Any]) -> torch.device:
 
 
 def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
-    return {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in batch.items()}
+    return {k: (v.to(device, non_blocking=True) if torch.is_tensor(v) else v) for k, v in batch.items()}
+
+
+def _cuda_memory() -> dict[str, float]:
+    if not torch.cuda.is_available():
+        return {}
+    return {
+        "cuda_memory_allocated_gb": round(torch.cuda.memory_allocated() / (1024**3), 4),
+        "cuda_memory_reserved_gb": round(torch.cuda.memory_reserved() / (1024**3), 4),
+        "cuda_max_memory_allocated_gb": round(torch.cuda.max_memory_allocated() / (1024**3), 4),
+    }
+
+
+def _refresh_reward_artifacts(output_dir: Path) -> list[str]:
+    jsonl_to_csv(output_dir / "train_metrics.jsonl", output_dir / "train_metrics.csv")
+    jsonl_to_csv(output_dir / "eval_metrics.jsonl", output_dir / "eval_metrics.csv")
+    train_rows = read_jsonl(output_dir / "train_metrics.jsonl")
+    eval_rows = read_jsonl(output_dir / "eval_metrics.jsonl")
+    plot_paths: list[str] = []
+    plot_paths.extend(
+        save_metric_plots(
+            train_rows,
+            output_dir / "plots",
+            x_key="step",
+            y_keys=["loss", "accuracy_batch", "reward_margin_batch", "examples_per_sec", "tokens_per_sec"],
+            prefix="reward_train",
+        )
+    )
+    plot_paths.extend(
+        save_metric_plots(
+            eval_rows,
+            output_dir / "plots",
+            x_key="step",
+            y_keys=["loss", "accuracy", "avg_margin"],
+            prefix="reward_eval",
+        )
+    )
+    return plot_paths
 
 
 def evaluate_reward_model(model: RewardModel, loader: DataLoader, device: torch.device, *, max_batches: int | None = None) -> dict[str, float]:
@@ -192,19 +229,26 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
         model.to(device)
 
     collator = PreferenceCollator(tokenizer, max_length=int(cfg.data.get("max_length", 1024)))
+    num_workers = int(cfg.train.get("num_workers", 0))
+    pin_memory = bool(cfg.train.get("pin_memory", torch.cuda.is_available()))
+    persistent_workers = bool(cfg.train.get("persistent_workers", num_workers > 0)) and num_workers > 0
     train_loader = DataLoader(
         PreferencePairDataset(train_pairs),
         batch_size=int(cfg.train.get("batch_size", 2)),
         shuffle=True,
         collate_fn=collator,
-        num_workers=int(cfg.train.get("num_workers", 0)),
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
     )
     val_loader = DataLoader(
         PreferencePairDataset(val_pairs),
         batch_size=int(cfg.train.get("eval_batch_size", cfg.train.get("batch_size", 2))),
         shuffle=False,
         collate_fn=collator,
-        num_workers=int(cfg.train.get("num_workers", 0)),
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
     )
 
     optimizer = torch.optim.AdamW(
@@ -218,9 +262,16 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
     log_every = int(cfg.train.get("log_every", 10))
     eval_every = int(cfg.train.get("eval_every", 200))
     global_step = 0
+    examples_seen = 0
+    tokens_seen = 0
     running_loss = 0.0
     running_batches = 0
     start_time = time.time()
+    last_log_time = start_time
+    last_log_examples = 0
+    last_log_tokens = 0
+    artifact_every = int(cfg.train.get("artifact_every", 100))
+    save_every_steps = int(cfg.train.get("save_every_steps", 0))
 
     for epoch in range(num_epochs):
         model.train()
@@ -229,6 +280,10 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
         pending_grads = 0
         for local_step, batch in enumerate(pbar, start=1):
             batch = _move_batch(batch, device)
+            batch_examples = int(batch["chosen_input_ids"].size(0))
+            batch_tokens = int(batch["chosen_attention_mask"].sum().item() + batch["rejected_attention_mask"].sum().item())
+            examples_seen += batch_examples
+            tokens_seen += batch_tokens
             chosen = model(batch["chosen_input_ids"], batch["chosen_attention_mask"])
             rejected = model(batch["rejected_input_ids"], batch["rejected_attention_mask"])
             diff = chosen - rejected
@@ -245,6 +300,8 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
                 pending_grads = 0
 
                 if global_step % log_every == 0:
+                    now = time.time()
+                    dt = max(now - last_log_time, 1e-8)
                     record = {
                         "step": global_step,
                         "epoch": epoch + 1,
@@ -254,12 +311,26 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
                         "reward_margin_batch": float(diff.mean().item()),
                         "accuracy_batch": float((diff > 0).float().mean().item()),
                         "learning_rate": float(optimizer.param_groups[0]["lr"]),
-                        "elapsed_sec": time.time() - start_time,
+                        "elapsed_sec": now - start_time,
+                        "examples_seen": examples_seen,
+                        "tokens_seen": tokens_seen,
+                        "examples_per_sec": (examples_seen - last_log_examples) / dt,
+                        "tokens_per_sec": (tokens_seen - last_log_tokens) / dt,
                     }
+                    record.update(_cuda_memory())
                     running_loss = 0.0
                     running_batches = 0
+                    last_log_time = now
+                    last_log_examples = examples_seen
+                    last_log_tokens = tokens_seen
                     append_jsonl(record, output_dir / "train_metrics.jsonl")
-                    pbar.set_postfix(loss=f"{record['loss']:.4f}", acc=f"{record['accuracy_batch']:.3f}")
+                    pbar.set_postfix(loss=f"{record['loss']:.4f}", acc=f"{record['accuracy_batch']:.3f}", ex_s=f"{record['examples_per_sec']:.1f}")
+
+                if save_every_steps > 0 and global_step % save_every_steps == 0:
+                    model.save_rlhf_pretrained(output_dir / f"checkpoint_step_{global_step:06d}", tokenizer=tokenizer)
+
+                if artifact_every > 0 and global_step % artifact_every == 0:
+                    _refresh_reward_artifacts(output_dir)
 
                 if eval_every > 0 and global_step % eval_every == 0:
                     eval_metrics = evaluate_reward_model(
@@ -269,7 +340,9 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
                         max_batches=cfg.train.get("eval_max_batches", 50),
                     )
                     eval_metrics.update({"step": global_step, "epoch": epoch + 1, "elapsed_sec": time.time() - start_time})
+                    eval_metrics.update(_cuda_memory())
                     append_jsonl(eval_metrics, output_dir / "eval_metrics.jsonl")
+                    _refresh_reward_artifacts(output_dir)
                     model.train()
 
         # Do not silently drop the last partial accumulation at epoch end.
@@ -280,20 +353,16 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
 
         epoch_eval = evaluate_reward_model(model, val_loader, device, max_batches=cfg.train.get("eval_max_batches", 50))
         epoch_eval.update({"step": global_step, "epoch": epoch + 1, "elapsed_sec": time.time() - start_time})
+        epoch_eval.update(_cuda_memory())
         append_jsonl(epoch_eval, output_dir / "eval_metrics.jsonl")
         model.save_rlhf_pretrained(output_dir / f"checkpoint_epoch_{epoch + 1:02d}", tokenizer=tokenizer)
+        _refresh_reward_artifacts(output_dir)
 
     final_metrics = evaluate_reward_model(model, val_loader, device, max_batches=cfg.train.get("final_eval_max_batches"))
     final_metrics.update({"step": global_step, "elapsed_sec": time.time() - start_time})
     write_json(final_metrics, output_dir / "final_eval_metrics.json")
     model.save_rlhf_pretrained(output_dir / "checkpoint_final", tokenizer=tokenizer)
 
-    jsonl_to_csv(output_dir / "train_metrics.jsonl", output_dir / "train_metrics.csv")
-    jsonl_to_csv(output_dir / "eval_metrics.jsonl", output_dir / "eval_metrics.csv")
-    train_rows = read_jsonl(output_dir / "train_metrics.jsonl")
-    eval_rows = read_jsonl(output_dir / "eval_metrics.jsonl")
-    plot_paths = []
-    plot_paths.extend(save_metric_plots(train_rows, output_dir / "plots", x_key="step", y_keys=["loss", "accuracy_batch", "reward_margin_batch"], prefix="reward_train"))
-    plot_paths.extend(save_metric_plots(eval_rows, output_dir / "plots", x_key="step", y_keys=["loss", "accuracy", "avg_margin"], prefix="reward_eval"))
+    plot_paths = _refresh_reward_artifacts(output_dir)
     write_json({"final_metrics": final_metrics, "plot_paths": plot_paths}, output_dir / "run_summary.json")
     return output_dir

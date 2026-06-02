@@ -76,13 +76,59 @@ def load_causal_lm(load_cfg: ModelLoadConfig):
     kwargs: dict[str, Any] = {"trust_remote_code": load_cfg.trust_remote_code}
     dtype = resolve_dtype(load_cfg.torch_dtype)
     if dtype != "auto":
-        kwargs["torch_dtype"] = dtype
+        # Newer Transformers versions prefer `dtype`; older versions accepted
+        # `torch_dtype`. Colab currently warns on torch_dtype, so use dtype.
+        kwargs["dtype"] = dtype
     quant_cfg = build_quantization_config(load_cfg.load_in_4bit, load_cfg.load_in_8bit)
     if quant_cfg is not None:
         kwargs["quantization_config"] = quant_cfg
     if load_cfg.device_map is not None:
         kwargs["device_map"] = load_cfg.device_map
     return AutoModelForCausalLM.from_pretrained(load_cfg.model_name, **kwargs)
+
+
+def transformer_core(backbone: nn.Module) -> nn.Module | None:
+    """Return the decoder backbone without the LM head when available.
+
+    Reward modeling only needs hidden states, not full vocabulary logits. Calling
+    AutoModelForCausalLM directly materializes [batch, seq, vocab] logits, which
+    is slow and memory-heavy. For Qwen/Llama-style models, the causal LM exposes
+    the decoder as `.model`. For PEFT-wrapped models, the original causal LM sits
+    under `base_model.model`. The returned module still contains LoRA layers, so
+    reward-model training remains correct.
+    """
+    module = backbone
+    base_model = getattr(module, "base_model", None)
+    if base_model is not None and hasattr(base_model, "model"):
+        module = base_model.model
+    core = getattr(module, "model", None)
+    if isinstance(core, nn.Module):
+        return core
+    return None
+
+
+def forward_hidden_states(backbone: nn.Module, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    core = transformer_core(backbone)
+    if core is not None:
+        outputs = core(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            use_cache=False,
+            return_dict=True,
+        )
+        if hasattr(outputs, "last_hidden_state") and outputs.last_hidden_state is not None:
+            return outputs.last_hidden_state
+        if hasattr(outputs, "hidden_states") and outputs.hidden_states is not None:
+            return outputs.hidden_states[-1]
+
+    outputs = backbone(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        output_hidden_states=True,
+        use_cache=False,
+    )
+    return outputs.hidden_states[-1]
 
 
 def last_attended_indices(attention_mask: torch.Tensor) -> torch.Tensor:
@@ -149,16 +195,10 @@ class RewardModel(nn.Module):
         return cls(backbone=backbone, hidden_size=hidden_size)
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        outputs = self.backbone(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            output_hidden_states=True,
-            use_cache=False,
-        )
-        hidden = outputs.hidden_states[-1]
+        hidden = forward_hidden_states(self.backbone, input_ids, attention_mask)
         last_idx = last_attended_indices(attention_mask)
         batch_idx = torch.arange(input_ids.size(0), device=input_ids.device)
-        pooled = hidden[batch_idx, last_idx]
+        pooled = hidden[batch_idx, last_idx].to(self.reward_head.weight.dtype)
         return self.reward_head(pooled).squeeze(-1)
 
     def trainable_parameters(self):

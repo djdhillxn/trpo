@@ -2,11 +2,11 @@ model:
   name: Qwen/Qwen2.5-0.5B-Instruct
   torch_dtype: bfloat16
   trust_remote_code: false
-  # Set device_map: auto for multi-GPU/offload. Keep null for normal single Colab GPU.
   device_map: null
-  load_in_4bit: true
+  # A100 40GB profile: full BF16 is faster than 4-bit for this 0.5B model.
+  load_in_4bit: false
   load_in_8bit: false
-  gradient_checkpointing: true
+  gradient_checkpointing: false
 
 lora:
   enabled: true
@@ -28,23 +28,28 @@ data:
   train_split: train
   eval_split: validation
   max_length: 1024
-  # Start small for first Colab run; set to null for full HelpSteer3.
-  max_train_samples: 16000
-  max_eval_samples: 2000
+  # Full HelpSteer3 preference split after dropping ties/malformed examples.
+  max_train_samples: null
+  max_eval_samples: null
 
 train:
   output_dir: outputs/rlhf/qwen25_05b_helpsteer3_reward
   seed: 839
   device: cuda
   epochs: 2
-  batch_size: 2
-  eval_batch_size: 2
-  gradient_accumulation_steps: 8
+  # A100 40GB target: increase to 12 if GPU memory stays below ~30 GB.
+  batch_size: 8
+  eval_batch_size: 16
+  gradient_accumulation_steps: 2
   learning_rate: 2.0e-5
   weight_decay: 0.0
   max_grad_norm: 1.0
   log_every: 10
   eval_every: 100
-  eval_max_batches: 50
+  eval_max_batches: 80
   final_eval_max_batches: null
-  num_workers: 0
+  artifact_every: 50
+  save_every_steps: 0
+  num_workers: 2
+  pin_memory: true
+  persistent_workers: true

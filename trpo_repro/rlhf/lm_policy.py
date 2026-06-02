@@ -99,7 +99,7 @@ class TokenPolicyWithValue(nn.Module):
             use_cache=False,
         )
         hidden = outputs.hidden_states[-1]
-        values = self.value_head(hidden).squeeze(-1)
+        values = self.value_head(hidden.to(self.value_head.weight.dtype)).squeeze(-1)
         return LMForwardOutput(logits=outputs.logits, values=values)
 
     @torch.no_grad()
