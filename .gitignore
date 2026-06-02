@@ -12,3 +12,7 @@ __pycache__/
 # Keep private report drafts/build products local. Public figures and summaries
 # live under docs/figures_and_summaries/.
 report/
+
+# Demo videos can be regenerated from checkpoints.
+outputs/videos/
+*.mp4

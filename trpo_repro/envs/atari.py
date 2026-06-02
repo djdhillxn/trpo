@@ -45,13 +45,16 @@ def make_atari_env(env_id: str, seed: int, cfg):
 
     # To mimic older DeepMind-style pipelines more closely, we disable sticky actions
     # and use explicit preprocessing frame-skip instead of relying on v5 defaults.
-    env = gym.make(
-        env_id,
+    make_kwargs = dict(
         obs_type="rgb",
         frameskip=1,
         repeat_action_probability=float(cfg.env.get("repeat_action_probability", 0.0)),
         full_action_space=bool(cfg.env.get("full_action_space", False)),
     )
+    render_mode = cfg.env.get("render_mode")
+    if render_mode is not None:
+        make_kwargs["render_mode"] = str(render_mode)
+    env = gym.make(env_id, **make_kwargs)
     env.reset(seed=seed)
     env = AtariPreprocessing(
         env,
