@@ -9,8 +9,8 @@ model:
 
 lora:
   enabled: true
-  r: 32
-  lora_alpha: 64
+  r: 16
+  lora_alpha: 32
   lora_dropout: 0.05
   bias: none
   task_type: CAUSAL_LM
@@ -25,28 +25,24 @@ lora:
 
 data:
   train_split: train
-  eval_split: validation
   max_length: 1024
   max_train_samples: null
-  max_eval_samples: null
 
 train:
-  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_reward
+  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_sft
   seed: 839
   device: cuda
-  # Preference/RM training is not normally run for dozens of epochs. We use more
-  # than the initial smoke run, but keep checkpoint_best to avoid overfitting.
-  epochs: 4
+  # This is a warm-start, not the main alignment step. One clean pass over
+  # chosen HelpSteer3 responses is usually enough to put the policy on the
+  # same distribution as the reward model before PPO starts.
+  epochs: 1
   batch_size: 8
-  eval_batch_size: 16
   gradient_accumulation_steps: 2
   learning_rate: 1.0e-5
-  weight_decay: 0.01
+  weight_decay: 0.0
   max_grad_norm: 1.0
+  warmup_steps: 50
   log_every: 10
-  eval_every: 100
-  eval_max_batches: null
-  final_eval_max_batches: null
   artifact_every: 50
   save_every_steps: 0
   num_workers: 2

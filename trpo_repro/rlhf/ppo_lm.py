@@ -163,12 +163,13 @@ class LMPPOTrainer:
                 break
 
         with torch.no_grad():
-            ref_logratio = batch.old_logprobs - batch.ref_logprobs
-            objective_kl = masked_mean(ref_logratio, batch.response_mask).item()
-            # A second, non-negative-ish diagnostic used for stability checks.  It
-            # is not mathematically exact KL, but it flags large token-level drift.
-            abs_ref_logratio = masked_mean(ref_logratio.abs(), batch.response_mask).item()
-            non_score_reward = masked_mean(-float(kl_coef) * ref_logratio, batch.response_mask).item()
+            current_out = self.policy(batch.input_ids, batch.attention_mask)
+            current_logprobs = shifted_token_logprobs(current_out.logits, batch.input_ids)
+            current_ref_logratio = current_logprobs.float() - batch.ref_logprobs.float()
+            rollout_ref_logratio = batch.old_logprobs.float() - batch.ref_logprobs.float()
+            objective_kl = masked_mean(current_ref_logratio, batch.response_mask).item()
+            abs_ref_logratio = masked_mean(current_ref_logratio.abs(), batch.response_mask).item()
+            non_score_reward = masked_mean(-float(kl_coef) * rollout_ref_logratio, batch.response_mask).item()
             total_reward = masked_mean(batch.rewards, batch.response_mask).item()
             value_ev = explained_variance(batch.values, batch.returns, batch.response_mask)
 
@@ -202,7 +203,8 @@ class LMPPOTrainer:
         new_logprobs = shifted_token_logprobs(out.logits, input_ids)
         new_values = out.values[:, :-1]
 
-        ratio = torch.exp(new_logprobs - old_logprobs)
+        logratio = new_logprobs - old_logprobs
+        ratio = torch.exp(logratio)
         unclipped = ratio * advantages
         clipped = torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range) * advantages
         policy_loss = -masked_mean(torch.minimum(unclipped, clipped), mask)
@@ -231,7 +233,11 @@ class LMPPOTrainer:
         self.optimizer.step()
 
         with torch.no_grad():
-            approx_kl = masked_mean(old_logprobs - new_logprobs, mask).item()
+            # Schulman-style sampled approximate KL for old policy -> new policy.
+            # This is more stable than mean(old_logp - new_logp), which can be
+            # negative on small minibatches and fail to trigger early stopping.
+            approx_kl_tensor = (ratio - 1.0) - logratio
+            approx_kl = masked_mean(approx_kl_tensor, mask).clamp_min(0.0).item()
             clip_fraction = masked_mean((torch.abs(ratio - 1.0) > self.clip_range).float(), mask).item()
         return {
             "loss": float(loss.item()),

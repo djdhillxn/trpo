@@ -93,27 +93,51 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
         output_dir / "run_metadata.json",
     )
 
-    policy = TokenPolicyWithValue.from_model_name(
-        model_name,
-        torch_dtype=str(cfg.model.get("torch_dtype", "auto")),
-        device_map=cfg.model.get("policy_device_map"),
-        load_in_4bit=bool(cfg.model.get("policy_load_in_4bit", cfg.model.get("load_in_4bit", False))),
-        load_in_8bit=bool(cfg.model.get("policy_load_in_8bit", False)),
-        lora=dict(cfg.get("lora", {})),
-        gradient_checkpointing=bool(cfg.model.get("gradient_checkpointing", True)),
-        trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
-    )
+    policy_init_checkpoint = cfg.model.get("policy_init_checkpoint_dir")
+    if policy_init_checkpoint:
+        policy = TokenPolicyWithValue.load_rlhf_pretrained(
+            str(policy_init_checkpoint),
+            base_model_name=model_name,
+            torch_dtype=str(cfg.model.get("torch_dtype", "auto")),
+            device_map=cfg.model.get("policy_device_map"),
+            load_in_4bit=bool(cfg.model.get("policy_load_in_4bit", cfg.model.get("load_in_4bit", False))),
+            load_in_8bit=bool(cfg.model.get("policy_load_in_8bit", False)),
+            trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
+        )
+    else:
+        policy = TokenPolicyWithValue.from_model_name(
+            model_name,
+            torch_dtype=str(cfg.model.get("torch_dtype", "auto")),
+            device_map=cfg.model.get("policy_device_map"),
+            load_in_4bit=bool(cfg.model.get("policy_load_in_4bit", cfg.model.get("load_in_4bit", False))),
+            load_in_8bit=bool(cfg.model.get("policy_load_in_8bit", False)),
+            lora=dict(cfg.get("lora", {})),
+            gradient_checkpointing=bool(cfg.model.get("gradient_checkpointing", True)),
+            trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
+        )
     if cfg.model.get("policy_device_map") is None:
         policy.to(device)
 
-    reference = FrozenCausalLM.from_model_name(
-        model_name,
-        torch_dtype=str(cfg.model.get("ref_torch_dtype", cfg.model.get("torch_dtype", "auto"))),
-        device_map=cfg.model.get("ref_device_map"),
-        load_in_4bit=bool(cfg.model.get("ref_load_in_4bit", True)),
-        load_in_8bit=bool(cfg.model.get("ref_load_in_8bit", False)),
-        trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
-    )
+    ref_checkpoint = cfg.model.get("ref_checkpoint_dir") or policy_init_checkpoint
+    if ref_checkpoint:
+        reference = FrozenCausalLM.load_rlhf_pretrained(
+            str(ref_checkpoint),
+            base_model_name=model_name,
+            torch_dtype=str(cfg.model.get("ref_torch_dtype", cfg.model.get("torch_dtype", "auto"))),
+            device_map=cfg.model.get("ref_device_map"),
+            load_in_4bit=bool(cfg.model.get("ref_load_in_4bit", True)),
+            load_in_8bit=bool(cfg.model.get("ref_load_in_8bit", False)),
+            trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
+        )
+    else:
+        reference = FrozenCausalLM.from_model_name(
+            model_name,
+            torch_dtype=str(cfg.model.get("ref_torch_dtype", cfg.model.get("torch_dtype", "auto"))),
+            device_map=cfg.model.get("ref_device_map"),
+            load_in_4bit=bool(cfg.model.get("ref_load_in_4bit", True)),
+            load_in_8bit=bool(cfg.model.get("ref_load_in_8bit", False)),
+            trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
+        )
     if cfg.model.get("ref_device_map") is None:
         reference.to(device)
 
@@ -158,7 +182,20 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
     progress = tqdm(range(1, total_updates + 1), desc="PPO updates")
     for update_idx in progress:
         records = next(prompt_iter)
-        prompts = [r["prompt"] for r in records]
+        group_size = int(cfg.train.get("num_generations_per_prompt", 1))
+        if group_size > 1:
+            prompts = []
+            expanded_records = []
+            for r in records:
+                for sample_idx in range(group_size):
+                    prompts.append(r["prompt"])
+                    rr = dict(r)
+                    rr["group_sample_idx"] = sample_idx
+                    rr["group_size"] = group_size
+                    expanded_records.append(rr)
+        else:
+            prompts = [r["prompt"] for r in records]
+            expanded_records = records
         shaping_cfg = dict(cfg.get("reward_shaping", {}))
         rollout = collect_lm_rollouts(
             policy,
@@ -169,11 +206,14 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
             generation=generation,
             kl_coef=kl_ctl.value,
             device=device,
-            metadata=records,
+            metadata=expanded_records,
             reward_clip_min=shaping_cfg.get("reward_clip_min"),
             reward_clip_max=shaping_cfg.get("reward_clip_max"),
             length_penalty_coef=float(shaping_cfg.get("length_penalty_coef", 0.0)),
             missing_eos_penalty=float(shaping_cfg.get("missing_eos_penalty", 0.0)),
+            group_size=group_size,
+            group_normalize=bool(shaping_cfg.get("group_normalize", False)),
+            group_advantage_eps=float(shaping_cfg.get("group_advantage_eps", 1e-6)),
         )
         rollout = ppo_trainer.prepare_batch(rollout)
         stats = ppo_trainer.update(rollout, kl_coef=kl_ctl.value)

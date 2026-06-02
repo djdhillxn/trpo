@@ -186,6 +186,37 @@ class FrozenCausalLM(nn.Module):
             )
         )
 
+
+    @classmethod
+    def load_rlhf_pretrained(
+        cls,
+        checkpoint_dir: str | Path,
+        *,
+        base_model_name: str,
+        torch_dtype: str = "auto",
+        device_map: str | None = None,
+        load_in_4bit: bool = False,
+        load_in_8bit: bool = False,
+        trust_remote_code: bool = False,
+    ) -> "FrozenCausalLM":
+        from peft import PeftModel
+
+        checkpoint_dir = Path(checkpoint_dir)
+        backbone = load_causal_lm(
+            ModelLoadConfig(
+                model_name=base_model_name,
+                torch_dtype=torch_dtype,
+                device_map=device_map,
+                load_in_4bit=load_in_4bit,
+                load_in_8bit=load_in_8bit,
+                trust_remote_code=trust_remote_code,
+            )
+        )
+        adapter_dir = checkpoint_dir / "adapter_or_model"
+        if adapter_dir.exists():
+            backbone = PeftModel.from_pretrained(backbone, adapter_dir, is_trainable=False)
+        return cls(backbone)
+
     @torch.no_grad()
     def logits(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         outputs = self.backbone(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)

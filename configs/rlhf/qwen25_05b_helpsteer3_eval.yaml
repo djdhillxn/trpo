@@ -11,7 +11,7 @@ model:
   ref_load_in_8bit: false
 
 reward_model:
-  checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_reward/checkpoint_final
+  checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_reward/checkpoint_best
   torch_dtype: bfloat16
   device_map: null
   load_in_4bit: false

@@ -1,3 +1,4 @@
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -272,6 +273,21 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
     last_log_tokens = 0
     artifact_every = int(cfg.train.get("artifact_every", 100))
     save_every_steps = int(cfg.train.get("save_every_steps", 0))
+    best_accuracy = -1.0
+    best_step = 0
+
+    def maybe_save_best(metrics: dict[str, float]) -> None:
+        nonlocal best_accuracy, best_step
+        acc = float(metrics.get("accuracy", -1.0))
+        step = int(metrics.get("step", global_step))
+        if acc > best_accuracy:
+            best_accuracy = acc
+            best_step = step
+            best_dir = output_dir / "checkpoint_best"
+            if best_dir.exists():
+                shutil.rmtree(best_dir)
+            model.save_rlhf_pretrained(best_dir, tokenizer=tokenizer)
+            write_json({"best_accuracy": best_accuracy, "best_step": best_step, "metrics": metrics}, output_dir / "best_checkpoint.json")
 
     for epoch in range(num_epochs):
         model.train()
@@ -342,6 +358,7 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
                     eval_metrics.update({"step": global_step, "epoch": epoch + 1, "elapsed_sec": time.time() - start_time})
                     eval_metrics.update(_cuda_memory())
                     append_jsonl(eval_metrics, output_dir / "eval_metrics.jsonl")
+                    maybe_save_best(eval_metrics)
                     _refresh_reward_artifacts(output_dir)
                     model.train()
 
@@ -355,14 +372,17 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
         epoch_eval.update({"step": global_step, "epoch": epoch + 1, "elapsed_sec": time.time() - start_time})
         epoch_eval.update(_cuda_memory())
         append_jsonl(epoch_eval, output_dir / "eval_metrics.jsonl")
+        maybe_save_best(epoch_eval)
         model.save_rlhf_pretrained(output_dir / f"checkpoint_epoch_{epoch + 1:02d}", tokenizer=tokenizer)
         _refresh_reward_artifacts(output_dir)
 
     final_metrics = evaluate_reward_model(model, val_loader, device, max_batches=cfg.train.get("final_eval_max_batches"))
     final_metrics.update({"step": global_step, "elapsed_sec": time.time() - start_time})
     write_json(final_metrics, output_dir / "final_eval_metrics.json")
+    final_metrics["step"] = global_step
+    maybe_save_best(final_metrics)
     model.save_rlhf_pretrained(output_dir / "checkpoint_final", tokenizer=tokenizer)
 
     plot_paths = _refresh_reward_artifacts(output_dir)
-    write_json({"final_metrics": final_metrics, "plot_paths": plot_paths}, output_dir / "run_summary.json")
+    write_json({"final_metrics": final_metrics, "best_accuracy": best_accuracy, "best_step": best_step, "plot_paths": plot_paths}, output_dir / "run_summary.json")
     return output_dir

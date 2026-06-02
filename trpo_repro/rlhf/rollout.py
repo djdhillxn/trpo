@@ -73,6 +73,9 @@ def collect_lm_rollouts(
     reward_clip_max: float | None = None,
     length_penalty_coef: float = 0.0,
     missing_eos_penalty: float = 0.0,
+    group_size: int = 1,
+    group_normalize: bool = False,
+    group_advantage_eps: float = 1e-6,
 ) -> LMRolloutBatch:
     """Generate responses and build an on-policy token-level PPO batch."""
     device = torch.device(device)
@@ -140,6 +143,22 @@ def collect_lm_rollouts(
     terminal_scores = scores - float(length_penalty_coef) * response_lengths.float()
     if float(missing_eos_penalty) != 0.0:
         terminal_scores = terminal_scores - float(missing_eos_penalty) * (~hit_eos).float()
+
+    # Optional group-relative reward baseline.  With one sample per prompt,
+    # sequence-level rewards are heavily confounded by prompt/domain difficulty.
+    # Repeating each prompt K times and centering scores within each group makes
+    # PPO learn which response is better for the same prompt, which is much closer
+    # to preference optimization and much less sensitive to prompt mix.
+    group_size = max(1, int(group_size))
+    if group_size > 1:
+        if terminal_scores.numel() % group_size != 0:
+            raise ValueError(f"Batch size {terminal_scores.numel()} must be divisible by group_size={group_size}")
+        grouped = terminal_scores.view(-1, group_size)
+        grouped = grouped - grouped.mean(dim=1, keepdim=True)
+        if bool(group_normalize) and group_size > 1:
+            std = grouped.std(dim=1, unbiased=False, keepdim=True).clamp_min(float(group_advantage_eps))
+            grouped = grouped / std
+        terminal_scores = grouped.reshape_as(terminal_scores)
 
     kl_per_token = old_logprobs.float() - ref_logprobs.float()
     rewards = (-float(kl_coef) * kl_per_token) * resp_mask.float()

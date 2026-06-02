@@ -3,7 +3,10 @@ model:
   torch_dtype: bfloat16
   trust_remote_code: false
   gradient_checkpointing: false
-  # A100 40GB profile: full BF16 models are faster than 4-bit here.
+  # PPO now starts from the SFT warm-start and uses that same SFT checkpoint as
+  # the frozen reference policy, which matches the standard RLHF setup.
+  policy_init_checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_sft/checkpoint_final
+  ref_checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_sft/checkpoint_final
   policy_device_map: null
   policy_load_in_4bit: false
   policy_load_in_8bit: false
@@ -29,7 +32,8 @@ lora:
     - down_proj
 
 reward_model:
-  checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_reward/checkpoint_final
+  # Use the best validation checkpoint, not necessarily the final epoch.
+  checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_reward/checkpoint_best
   torch_dtype: bfloat16
   device_map: null
   load_in_4bit: false
@@ -37,44 +41,46 @@ reward_model:
 
 data:
   prompt_split: train
-  max_prompt_samples: 24000
+  max_prompt_samples: null
 
 generation:
   max_prompt_length: 768
-  max_new_tokens: 96
-  temperature: 0.7
-  top_p: 0.9
+  max_new_tokens: 128
+  temperature: 0.9
+  top_p: 0.95
   do_sample: true
-  repetition_penalty: 1.05
-  no_repeat_ngram_size: 4
+  repetition_penalty: 1.03
+  no_repeat_ngram_size: 3
 
-# Conservative RLHF settings. The previous run let this coefficient decay to
-# ~1e-6, after which the policy drifted into non-language reward hacking.
 kl:
-  init_kl_coef: 0.10
-  min_kl_coef: 0.05
-  max_kl_coef: 1.0
-  target_ref_kl: 0.02
-  horizon: 10000
+  init_kl_coef: 0.03
+  min_kl_coef: 0.01
+  max_kl_coef: 0.30
+  target_ref_kl: 0.05
+  horizon: 30000
   adaptive: true
 
 reward_shaping:
   reward_clip_min: -5.0
   reward_clip_max: 5.0
-  length_penalty_coef: 0.005
-  missing_eos_penalty: 0.25
+  # With group-relative rewards, avoid length-heavy manual shaping. Keep this
+  # small so it only discourages rambling, not helpful detail.
+  length_penalty_coef: 0.001
+  missing_eos_penalty: 0.05
+  group_normalize: true
+  group_advantage_eps: 1.0e-6
 
 ppo:
-  learning_rate: 2.0e-6
+  learning_rate: 1.0e-6
   weight_decay: 0.0
-  ppo_epochs: 1
+  ppo_epochs: 2
   minibatch_size: 8
   clip_range: 0.1
   value_clip_range: 0.2
-  value_coef: 0.5
+  value_coef: 0.2
   entropy_coef: 0.0
   max_grad_norm: 1.0
-  target_policy_kl: 0.01
+  target_policy_kl: 0.02
   gamma: 1.0
   lam: 0.95
 
@@ -82,8 +88,11 @@ train:
   output_dir: outputs/rlhf/qwen25_05b_helpsteer3_ppo
   seed: 839
   device: cuda
-  rollout_batch_size: 24
-  total_updates: 100
+  # rollout_batch_size is now prompts per update. Actual generated sequences per
+  # update = rollout_batch_size * num_generations_per_prompt.
+  rollout_batch_size: 8
+  num_generations_per_prompt: 4
+  total_updates: 500
   save_every: 50
   sample_every: 25
   artifact_every: 25
