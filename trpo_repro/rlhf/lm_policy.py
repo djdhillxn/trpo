@@ -102,9 +102,61 @@ class TokenPolicyWithValue(nn.Module):
         values = self.value_head(hidden.to(self.value_head.weight.dtype)).squeeze(-1)
         return LMForwardOutput(logits=outputs.logits, values=values)
 
+    @staticmethod
+    def _temporarily_neutralize_sampling_defaults(backbone: nn.Module, do_sample: bool) -> dict[str, Any]:
+        """Suppress noisy Transformers warnings during deterministic generation.
+
+        Some chat models ship generation_config.json files with sampling-only
+        defaults such as temperature/top_p/top_k even when do_sample=False.
+        Recent Transformers versions validate those inherited values on every
+        generate() call and print repeated warnings.  For greedy evaluation we
+        temporarily set those fields to their neutral defaults and restore them
+        immediately after generation.
+        """
+        if bool(do_sample):
+            return {}
+        generation_config = getattr(backbone, "generation_config", None)
+        if generation_config is None:
+            return {}
+
+        neutral_defaults = {
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "top_k": 50,
+            "typical_p": 1.0,
+            "epsilon_cutoff": 0.0,
+            "eta_cutoff": 0.0,
+        }
+        saved: dict[str, Any] = {}
+        for name, neutral_value in neutral_defaults.items():
+            if hasattr(generation_config, name):
+                saved[name] = getattr(generation_config, name)
+                try:
+                    setattr(generation_config, name, neutral_value)
+                except Exception:
+                    pass
+        return saved
+
+    @staticmethod
+    def _restore_generation_defaults(backbone: nn.Module, saved: dict[str, Any]) -> None:
+        generation_config = getattr(backbone, "generation_config", None)
+        if generation_config is None:
+            return
+        for name, value in saved.items():
+            try:
+                setattr(generation_config, name, value)
+            except Exception:
+                pass
+
     @torch.no_grad()
     def generate(self, **kwargs) -> torch.Tensor:
-        return self.backbone.generate(**kwargs)
+        saved_generation_defaults = self._temporarily_neutralize_sampling_defaults(
+            self.backbone, bool(kwargs.get("do_sample", False))
+        )
+        try:
+            return self.backbone.generate(**kwargs)
+        finally:
+            self._restore_generation_defaults(self.backbone, saved_generation_defaults)
 
     def save_rlhf_pretrained(self, output_dir: str | Path, tokenizer: Any | None = None) -> None:
         output_dir = Path(output_dir)
