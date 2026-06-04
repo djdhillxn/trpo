@@ -8,7 +8,7 @@ from trpo_repro.config import load_config, save_config
 
 from .data import build_prompt_records, load_helpsteer3_preference, save_jsonl
 from .lm_policy import FrozenCausalLM, TokenPolicyWithValue
-from .metrics import write_csv
+from .metrics import write_csv, write_json
 from .reward_model import RewardModel
 from .rollout import GenerationConfig, collect_lm_rollouts
 
@@ -18,6 +18,22 @@ def _device_from_cfg(cfg: dict[str, Any]) -> torch.device:
     if name == "cuda" and not torch.cuda.is_available():
         name = "cpu"
     return torch.device(name)
+
+
+def _resolve_num_prompts(value: Any) -> int | None:
+    """Resolve eval.num_prompts; accepts integers or all/full/none for complete split."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"all", "full", "none", "null", "validation", "-1"}:
+            return None
+        value = lowered
+    try:
+        n = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"eval.num_prompts must be an integer or 'all', got {value!r}") from exc
+    return None if n <= 0 else n
 
 
 def _load_policy_or_base(cfg, checkpoint_dir: str | None, device: torch.device):
@@ -67,7 +83,7 @@ def run_before_after_eval(config_path: str | Path, *, output_dir: str | Path | N
     records = build_prompt_records(
         raw,
         tokenizer,
-        max_samples=int(cfg.eval.get("num_prompts", 100)),
+        max_samples=_resolve_num_prompts(cfg.eval.get("num_prompts", 100)),
         seed=int(cfg.eval.get("seed", 839)),
         shuffle=bool(cfg.eval.get("shuffle", True)),
     )
@@ -150,9 +166,79 @@ def run_before_after_eval(config_path: str | Path, *, output_dir: str | Path | N
 
     save_jsonl(rows, output_dir / "before_after_samples.jsonl")
     write_csv(rows, output_dir / "before_after_samples.csv")
+    _write_eval_summary(rows, output_dir)
+    _write_excel_if_available(rows, output_dir / "before_after_samples.xlsx")
     _write_markdown_table(rows[: int(cfg.eval.get("num_demo_rows", 12))], output_dir / "before_after_demo.md")
     return output_dir
 
+
+
+def _safe_len(text: Any) -> int:
+    return len(str(text or ""))
+
+
+def _write_eval_summary(rows: list[dict[str, Any]], output_dir: str | Path) -> None:
+    """Write compact report-friendly aggregate metrics for before/after eval."""
+    output_dir = Path(output_dir)
+    if not rows:
+        write_json({"num_examples": 0}, output_dir / "eval_summary.json")
+        return
+    winner_counts: dict[str, int] = {}
+    domain_counts: dict[str, dict[str, int]] = {}
+    reward_deltas: list[float] = []
+    base_rewards: list[float] = []
+    ppo_rewards: list[float] = []
+    base_chars: list[int] = []
+    ppo_chars: list[int] = []
+    for row in rows:
+        winner = str(row.get("winner", "unknown"))
+        domain = str(row.get("domain", "unknown"))
+        winner_counts[winner] = winner_counts.get(winner, 0) + 1
+        domain_counts.setdefault(domain, {})[winner] = domain_counts.setdefault(domain, {}).get(winner, 0) + 1
+        try:
+            reward_deltas.append(float(row.get("reward_delta", 0.0)))
+            base_rewards.append(float(row.get("base_reward", 0.0)))
+            ppo_rewards.append(float(row.get("ppo_reward", 0.0)))
+        except (TypeError, ValueError):
+            pass
+        base_chars.append(_safe_len(row.get("base_response", "")))
+        ppo_chars.append(_safe_len(row.get("ppo_response", "")))
+
+    def stats(values: list[float | int]) -> dict[str, float]:
+        import statistics
+        vals = [float(v) for v in values]
+        if not vals:
+            return {"mean": 0.0, "median": 0.0, "min": 0.0, "max": 0.0}
+        return {
+            "mean": float(statistics.fmean(vals)),
+            "median": float(statistics.median(vals)),
+            "min": float(min(vals)),
+            "max": float(max(vals)),
+        }
+
+    summary = {
+        "num_examples": len(rows),
+        "winner_counts": winner_counts,
+        "domain_winner_counts": domain_counts,
+        "base_reward": stats(base_rewards),
+        "ppo_reward": stats(ppo_rewards),
+        "reward_delta": stats(reward_deltas),
+        "base_response_chars": stats(base_chars),
+        "ppo_response_chars": stats(ppo_chars),
+        "ppo_win_rate": float(winner_counts.get("ppo", 0) / max(len(rows), 1)),
+    }
+    write_json(summary, output_dir / "eval_summary.json")
+
+
+def _write_excel_if_available(rows: list[dict[str, Any]], path: str | Path) -> None:
+    """Write an XLSX copy when pandas/openpyxl are available; silently skip otherwise."""
+    try:
+        import pandas as pd
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(rows).to_excel(path, index=False)
+    except Exception:
+        return
 
 def _write_markdown_table(rows: list[dict[str, Any]], path: str | Path) -> None:
     path = Path(path)
