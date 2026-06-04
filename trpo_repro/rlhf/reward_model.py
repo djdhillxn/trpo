@@ -78,7 +78,7 @@ def load_causal_lm(load_cfg: ModelLoadConfig):
     if dtype != "auto":
         # Newer Transformers versions prefer `dtype`; older versions accepted
         # `torch_dtype`. Colab currently warns on torch_dtype, so use dtype.
-        kwargs["dtype"] = dtype
+        kwargs["torch_dtype"] = dtype
     quant_cfg = build_quantization_config(load_cfg.load_in_4bit, load_cfg.load_in_8bit)
     if quant_cfg is not None:
         kwargs["quantization_config"] = quant_cfg
