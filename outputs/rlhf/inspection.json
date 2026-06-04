@@ -1,0 +1,137 @@
+{
+  "root": "outputs/rlhf",
+  "reward_model": {
+    "loss": 1.2450055715180526,
+    "accuracy": 0.6645800730307773,
+    "avg_margin": 5.015067436325718,
+    "num_pairs": 1917,
+    "accuracy_domain_code": 0.5906976744186047,
+    "avg_margin_domain_code": 4.488370449043984,
+    "accuracy_domain_general": 0.6936542669584245,
+    "avg_margin_domain_general": 4.917881562458087,
+    "accuracy_domain_stem": 0.7078189300411523,
+    "avg_margin_domain_stem": 4.963079739009402,
+    "accuracy_domain_multilingual": 0.6484848484848484,
+    "avg_margin_domain_multilingual": 6.008826751961853,
+    "step": 9068,
+    "elapsed_sec": 14324.922630786896
+  },
+  "ppo": {
+    "num_updates": 250,
+    "reward_model_score": {
+      "first": -1.1289010047912598,
+      "last": -2.5711264610290527,
+      "min": -5.554645538330078,
+      "max": 3.190881729125977,
+      "mean": -0.9822970165014266,
+      "median": -1.0642284750938416
+    },
+    "objective_kl": {
+      "first": -0.0017740665934979,
+      "last": -0.0365767665207386,
+      "min": -0.0372816398739814,
+      "max": 0.004198919981718,
+      "mean": -0.011118929922311463,
+      "median": -0.00989908771589395
+    },
+    "abs_ref_logratio": {
+      "first": 0.0301913414150476,
+      "last": 0.1497018188238144,
+      "min": 0.026878060773015,
+      "max": 0.1624183654785156,
+      "mean": 0.07351042172312731,
+      "median": 0.06659501045942305
+    },
+    "kl_coef": {
+      "first": 0.1,
+      "last": 0.1,
+      "min": 0.1,
+      "max": 0.1,
+      "mean": 0.1,
+      "median": 0.1
+    },
+    "clip_fraction": {
+      "first": 0.0920863300561904,
+      "last": 0.1182965263724327,
+      "min": 0.0723684206604957,
+      "max": 0.1475625783205032,
+      "mean": 0.10990856239199635,
+      "median": 0.11021346971392626
+    },
+    "approx_kl": {
+      "first": 0.001067382399924,
+      "last": 0.0012792445486411,
+      "min": 0.000851243850775,
+      "max": 0.0020417051855474,
+      "mean": 0.0012076270056422308,
+      "median": 0.0012102526379749
+    },
+    "mean_response_tokens": {
+      "first": 85.4375,
+      "last": 81.375,
+      "min": 78.0,
+      "max": 96.0,
+      "mean": 89.80775,
+      "median": 90.125
+    },
+    "mean_response_chars": {
+      "first": 331.9375,
+      "last": 317.625,
+      "min": 271.875,
+      "max": 470.8125,
+      "mean": 369.344,
+      "median": 370.21875
+    },
+    "value_loss": {
+      "first": 9.152634620666504,
+      "last": 7.856169700622559,
+      "min": 4.678391933441162,
+      "max": 12.469473838806152,
+      "mean": 7.970099422454834,
+      "median": 7.915093660354614
+    },
+    "policy_loss": {
+      "first": 0.1056302934885025,
+      "last": -0.1406259089708328,
+      "min": -0.1406259089708328,
+      "max": 0.1757269948720932,
+      "mean": 0.00235856860911008,
+      "median": 0.0005054401553934
+    },
+    "flags": []
+  },
+  "evaluation": {
+    "num_examples": 200,
+    "winner_counts": {
+      "base": 113,
+      "ppo": 87
+    },
+    "base_reward": {
+      "mean": -1.2326889163209125,
+      "median": -0.7160694599151611,
+      "min": -20.166061401367188,
+      "max": 19.64488410949707
+    },
+    "ppo_reward": {
+      "mean": -1.5139666046202183,
+      "median": -1.2995174527168274,
+      "min": -19.62986183166504,
+      "max": 20.0046443939209
+    },
+    "reward_delta": {
+      "mean": -0.2812776882993057,
+      "median": -0.48875510692596436,
+      "min": -19.245055198669437,
+      "max": 25.4979829788208
+    },
+    "ppo_non_ascii_ratio_mean": 0.07443143912282343,
+    "base_non_ascii_ratio_mean": 0.07609752884841782,
+    "ppo_cjk_response_count": 12,
+    "ppo_bad_pattern_response_count": 1,
+    "flags": [
+      "Base model wins more examples than PPO under the reward model.",
+      "PPO responses contain known degenerate/toxic/debug-token patterns.",
+      "PPO responses contain CJK characters; verify multilingual prompts or drift."
+    ]
+  }
+}
