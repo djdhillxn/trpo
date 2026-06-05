@@ -57,6 +57,10 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "samples").mkdir(exist_ok=True)
     (output_dir / "plots").mkdir(exist_ok=True)
+    checkpoint_subdir = str(cfg.train.get("checkpoint_subdir", "checkpoints"))
+    checkpoint_root = output_dir / checkpoint_subdir
+    checkpoint_root.mkdir(exist_ok=True)
+    checkpoint_manifest: list[dict[str, Any]] = []
     save_config(cfg, output_dir / "config_resolved.yaml")
 
     from transformers import AutoTokenizer
@@ -174,7 +178,8 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
 
     batch_size = int(cfg.train.get("rollout_batch_size", 8))
     total_updates = int(cfg.train.get("total_updates", 1000))
-    save_every = int(cfg.train.get("save_every", 100))
+    # Backward compatible: save_every was the original name. checkpoint_every is clearer.
+    save_every = int(cfg.train.get("checkpoint_every", cfg.train.get("save_every", 100)))
     sample_every = int(cfg.train.get("sample_every", 25))
     prompt_iter = _batched_cycle(prompt_records, batch_size, seed=seed)
     start_time = time.time()
@@ -288,10 +293,28 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
             save_jsonl(sample_rows, output_dir / f"samples/update_{update_idx:05d}.jsonl")
 
         if save_every > 0 and update_idx % save_every == 0:
-            policy.save_rlhf_pretrained(output_dir / f"checkpoint_{update_idx:05d}", tokenizer=tokenizer)
+            ckpt_path = checkpoint_root / f"update_{update_idx:05d}"
+            policy.save_rlhf_pretrained(ckpt_path, tokenizer=tokenizer)
+            checkpoint_manifest.append(
+                {
+                    "update": update_idx,
+                    "path": str(ckpt_path),
+                    "reward_model_score": float(record.get("reward_model_score", 0.0)),
+                    "total_reward": float(record.get("total_reward", 0.0)),
+                    "abs_ref_logratio": float(record.get("abs_ref_logratio", 0.0)),
+                    "clip_fraction": float(record.get("clip_fraction", 0.0)),
+                    "mean_response_tokens": float(record.get("mean_response_tokens", 0.0)),
+                    "empty_response_rate": float(record.get("empty_response_rate", 0.0)),
+                }
+            )
+            write_json({"checkpoints": checkpoint_manifest}, checkpoint_root / "manifest.json")
             jsonl_to_csv(output_dir / "ppo_metrics.jsonl", output_dir / "ppo_metrics.csv")
+            print(f"Saved PPO checkpoint: {ckpt_path}")
 
-    policy.save_rlhf_pretrained(output_dir / "checkpoint_final", tokenizer=tokenizer)
+    final_checkpoint = output_dir / "checkpoint_final"
+    policy.save_rlhf_pretrained(final_checkpoint, tokenizer=tokenizer)
+    checkpoint_manifest.append({"update": "final", "path": str(final_checkpoint)})
+    write_json({"checkpoints": checkpoint_manifest}, checkpoint_root / "manifest.json")
     jsonl_to_csv(output_dir / "ppo_metrics.jsonl", output_dir / "ppo_metrics.csv")
     rows = read_jsonl(output_dir / "ppo_metrics.jsonl")
     plot_paths = save_metric_plots(
@@ -315,7 +338,13 @@ def run_ppo_training(config_path: str | Path, *, output_dir: str | Path | None =
         prefix="ppo",
     )
     write_json(
-        {"total_updates_requested": total_updates, "total_updates_completed": len(rows), "final_kl_coef": kl_ctl.value, "plot_paths": plot_paths},
+        {
+            "total_updates_requested": total_updates,
+            "total_updates_completed": len(rows),
+            "final_kl_coef": kl_ctl.value,
+            "checkpoint_manifest": str(checkpoint_root / "manifest.json"),
+            "plot_paths": plot_paths,
+        },
         output_dir / "run_summary.json",
     )
     return output_dir

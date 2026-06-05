@@ -88,6 +88,9 @@ train:
   rollout_batch_size: 16
   num_generations_per_prompt: 1
   total_updates: 250
+  # save_every is still supported, but checkpoint_every is clearer for new runs.
+  checkpoint_every: 50
+  checkpoint_subdir: checkpoints
   save_every: 50
   sample_every: 10
   artifact_every: 10
