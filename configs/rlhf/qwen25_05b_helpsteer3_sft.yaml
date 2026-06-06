@@ -5,7 +5,7 @@ model:
   device_map: null
   load_in_4bit: false
   load_in_8bit: false
-  gradient_checkpointing: false
+  gradient_checkpointing: true
 
 lora:
   enabled: true
@@ -25,23 +25,20 @@ lora:
 
 data:
   train_split: train
-  max_length: 1024
+  max_length: 4096
   max_train_samples: null
 
 train:
-  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_sft
+  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_sft_4096
   seed: 839
   device: cuda
-  # This is a warm-start, not the main alignment step. After the prompt
-  # sanitization fix, use two clean passes to put the policy closer to the
-  # HelpSteer3 chosen-response distribution before PPO starts.
   epochs: 2
-  batch_size: 8
-  gradient_accumulation_steps: 2
-  learning_rate: 8.0e-6
+  batch_size: 6
+  gradient_accumulation_steps: 3
+  learning_rate: 5.0e-6
   weight_decay: 0.0
   max_grad_norm: 1.0
-  warmup_steps: 50
+  warmup_steps: 100
   log_every: 10
   artifact_every: 50
   save_every_steps: 0
