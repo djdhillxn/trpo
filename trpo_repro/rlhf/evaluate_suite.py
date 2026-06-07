@@ -56,6 +56,61 @@ def _none_if_empty(value: Any) -> str | None:
     return str(value)
 
 
+def _looks_like_policy_checkpoint(path: Path) -> bool:
+    """Return True only for actual saved policy checkpoints.
+
+    This prevents the dangerous failure mode where a typo such as
+    `checkpoints/checkpoint_00250` silently loads the base model because no
+    adapter exists at that location.
+    """
+    return path.exists() and (path / "adapter_or_model").exists() and (path / "value_head.pt").exists()
+
+
+def _checkpoint_candidates_from_path(path: Path) -> list[Path]:
+    candidates = [path]
+
+    # If the user accidentally points to an output dir, try common children.
+    candidates.extend([path / "checkpoint_final", path / "checkpoints" / "update_00250", path / "checkpoint_00250"])
+
+    # If the user writes checkpoints/checkpoint_00250 but the run saved
+    # checkpoints/update_00250, repair that common naming mismatch.
+    digits = re.sub(r"\D", "", path.name)
+    if digits:
+        update_name = f"update_{int(digits):05d}"
+        old_name = f"checkpoint_{int(digits):05d}"
+        candidates.extend([
+            path.parent / update_name,
+            path.parent / old_name,
+            path.parent.parent / "checkpoints" / update_name,
+            path.parent.parent / old_name,
+        ])
+
+    # If a manifest exists, add its saved paths.
+    possible_manifests = [path / "checkpoints" / "manifest.json", path.parent / "manifest.json", path.parent.parent / "manifest.json"]
+    for manifest in possible_manifests:
+        if not manifest.exists():
+            continue
+        try:
+            import json
+
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            for item in data.get("checkpoints", []):
+                ckpt_path = item.get("path")
+                if ckpt_path:
+                    candidates.append(Path(ckpt_path))
+        except Exception:
+            pass
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            deduped.append(candidate)
+            seen.add(key)
+    return deduped
+
+
 def _resolve_checkpoint_dir(spec: dict[str, Any]) -> str | None:
     """Resolve a policy checkpoint specification.
 
@@ -64,25 +119,22 @@ def _resolve_checkpoint_dir(spec: dict[str, Any]) -> str | None:
       - checkpoint_dir: path/to/checkpoint   -> exact checkpoint
       - output_dir + checkpoint: update_00250/checkpoint_00250/final
 
-    The resolver checks both newer checkpoints/update_XXXXX and older
-    checkpoint_XXXXX layouts so interrupted runs remain easy to evaluate.
+    The resolver accepts both newer checkpoints/update_XXXXX and older
+    checkpoint_XXXXX layouts.  It now validates that a candidate really contains
+    an adapter/model and value head; otherwise evaluation fails loudly instead of
+    silently falling back to the base model.
     """
     checkpoint_dir = _none_if_empty(spec.get("checkpoint_dir", spec.get("policy_checkpoint_dir")))
     if checkpoint_dir:
         path = Path(checkpoint_dir)
-        if path.exists():
-            return str(path)
-        # If the caller passed an output dir plus update suffix by mistake,
-        # try common child layouts before failing downstream.
-        candidates = [
-            path / "checkpoint_final",
-            path / "checkpoints" / "update_00250",
-            path / "checkpoint_00250",
-        ]
-        for candidate in candidates:
-            if candidate.exists():
+        for candidate in _checkpoint_candidates_from_path(path):
+            if _looks_like_policy_checkpoint(candidate):
                 return str(candidate)
-        return str(path)
+        tried = "\n  - ".join(str(c) for c in _checkpoint_candidates_from_path(path)[:12])
+        raise FileNotFoundError(
+            f"Could not resolve policy checkpoint for label={spec.get('label')!r}. "
+            f"Requested: {path}\nTried:\n  - {tried}"
+        )
 
     output_dir = _none_if_empty(spec.get("output_dir"))
     checkpoint = _none_if_empty(spec.get("checkpoint"))
@@ -103,11 +155,13 @@ def _resolve_checkpoint_dir(spec: dict[str, Any]) -> str | None:
             root / old_name,
         ]
     for candidate in candidates:
-        if candidate.exists():
+        if _looks_like_policy_checkpoint(candidate):
             return str(candidate)
-    # Return the most likely path even if it does not exist; the model loader
-    # will raise a clear FileNotFoundError later.
-    return str(candidates[0])
+    tried = "\n  - ".join(str(c) for c in candidates)
+    raise FileNotFoundError(
+        f"Could not resolve policy checkpoint for label={spec.get('label')!r}. "
+        f"output_dir={output_dir!r}, checkpoint={checkpoint!r}\nTried:\n  - {tried}"
+    )
 
 
 def _policy_specs(cfg) -> list[dict[str, Any]]:

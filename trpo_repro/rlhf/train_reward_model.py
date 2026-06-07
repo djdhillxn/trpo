@@ -113,6 +113,62 @@ def _refresh_reward_artifacts(output_dir: Path) -> list[str]:
     return plot_paths
 
 
+def _load_step_offset_from_metrics(path: Path) -> int:
+    """Best-effort global-step offset for resumed reward runs."""
+    if path.is_dir():
+        candidates = [
+            path / ".." / "final_eval_metrics.json",
+            path / ".." / "best_checkpoint.json",
+            path / ".." / "eval_metrics.jsonl",
+            path / ".." / "train_metrics.jsonl",
+        ]
+    else:
+        candidates = [path]
+    best = 0
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if not candidate.exists():
+            continue
+        try:
+            if candidate.suffix == ".jsonl":
+                for row in read_jsonl(candidate):
+                    best = max(best, int(row.get("step", 0)))
+            else:
+                import json
+
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    best = max(best, int(data.get("step", 0)))
+                    metrics = data.get("metrics") or data.get("final_metrics") or {}
+                    if isinstance(metrics, dict):
+                        best = max(best, int(metrics.get("step", 0)))
+        except Exception:
+            continue
+    return best
+
+
+def _maybe_clear_metric_artifacts(output_dir: Path, enabled: bool) -> None:
+    """Remove metric files for clean resumed runs without deleting checkpoints."""
+    if not enabled:
+        return
+    for name in [
+        "train_metrics.jsonl",
+        "eval_metrics.jsonl",
+        "train_metrics.csv",
+        "eval_metrics.csv",
+        "run_summary.json",
+        "final_eval_metrics.json",
+        "best_checkpoint.json",
+    ]:
+        path = output_dir / name
+        if path.exists():
+            path.unlink()
+    plots = output_dir / "plots"
+    if plots.exists():
+        shutil.rmtree(plots)
+    plots.mkdir(parents=True, exist_ok=True)
+
+
 def evaluate_reward_model(model: RewardModel, loader: DataLoader, device: torch.device, *, max_batches: int | None = None) -> dict[str, float]:
     model.eval()
     total_loss = 0.0
@@ -166,6 +222,7 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
     output_dir = Path(output_dir or cfg.train.get("output_dir", "outputs/rlhf/qwen25_05b_helpsteer3_reward"))
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "plots").mkdir(exist_ok=True)
+    _maybe_clear_metric_artifacts(output_dir, bool(cfg.train.get("clear_existing_metrics", False)))
     save_config(cfg, output_dir / "config_resolved.yaml")
 
     from transformers import AutoTokenizer
@@ -210,22 +267,44 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
                 "model_name": model_name,
                 "num_train_pairs": len(train_pairs),
                 "num_eval_pairs": len(val_pairs),
+                "resume_from_checkpoint": cfg.train.get("resume_from_checkpoint"),
             },
         ),
         output_dir / "run_metadata.json",
     )
 
     device = _device_from_cfg(cfg.train)
-    model = RewardModel.from_model_name(
-        model_name,
-        torch_dtype=str(cfg.model.get("torch_dtype", "auto")),
-        device_map=cfg.model.get("device_map"),
-        load_in_4bit=bool(cfg.model.get("load_in_4bit", False)),
-        load_in_8bit=bool(cfg.model.get("load_in_8bit", False)),
-        lora=dict(cfg.get("lora", {})),
-        gradient_checkpointing=bool(cfg.model.get("gradient_checkpointing", True)),
-        trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
-    )
+    resume_checkpoint = cfg.train.get("resume_from_checkpoint")
+    if resume_checkpoint:
+        resume_checkpoint = Path(str(resume_checkpoint))
+        if not resume_checkpoint.exists():
+            raise FileNotFoundError(f"Reward resume checkpoint not found: {resume_checkpoint}")
+        model = RewardModel.load_rlhf_pretrained(
+            resume_checkpoint,
+            base_model_name=model_name,
+            torch_dtype=str(cfg.model.get("torch_dtype", "auto")),
+            device_map=cfg.model.get("device_map"),
+            load_in_4bit=bool(cfg.model.get("load_in_4bit", False)),
+            load_in_8bit=bool(cfg.model.get("load_in_8bit", False)),
+            trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
+            is_trainable=True,
+            strict=True,
+        )
+        if bool(cfg.model.get("gradient_checkpointing", True)) and hasattr(model.backbone, "gradient_checkpointing_enable"):
+            model.backbone.gradient_checkpointing_enable()
+            if hasattr(model.backbone.config, "use_cache"):
+                model.backbone.config.use_cache = False
+    else:
+        model = RewardModel.from_model_name(
+            model_name,
+            torch_dtype=str(cfg.model.get("torch_dtype", "auto")),
+            device_map=cfg.model.get("device_map"),
+            load_in_4bit=bool(cfg.model.get("load_in_4bit", False)),
+            load_in_8bit=bool(cfg.model.get("load_in_8bit", False)),
+            lora=dict(cfg.get("lora", {})),
+            gradient_checkpointing=bool(cfg.model.get("gradient_checkpointing", True)),
+            trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
+        )
     if cfg.model.get("device_map") is None:
         model.to(device)
 
@@ -262,7 +341,10 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
     num_epochs = int(cfg.train.get("epochs", 2))
     log_every = int(cfg.train.get("log_every", 10))
     eval_every = int(cfg.train.get("eval_every", 200))
-    global_step = 0
+    resume_step_offset = cfg.train.get("resume_step_offset")
+    if resume_step_offset in {None, "auto", "AUTO"} and cfg.train.get("resume_from_checkpoint"):
+        resume_step_offset = _load_step_offset_from_metrics(Path(str(cfg.train.get("resume_from_checkpoint"))))
+    global_step = int(resume_step_offset or 0)
     examples_seen = 0
     tokens_seen = 0
     running_loss = 0.0
@@ -384,5 +466,15 @@ def run_reward_training(config_path: str | Path, *, output_dir: str | Path | Non
     model.save_rlhf_pretrained(output_dir / "checkpoint_final", tokenizer=tokenizer)
 
     plot_paths = _refresh_reward_artifacts(output_dir)
-    write_json({"final_metrics": final_metrics, "best_accuracy": best_accuracy, "best_step": best_step, "plot_paths": plot_paths}, output_dir / "run_summary.json")
+    write_json(
+        {
+            "final_metrics": final_metrics,
+            "best_accuracy": best_accuracy,
+            "best_step": best_step,
+            "resume_from_checkpoint": cfg.train.get("resume_from_checkpoint"),
+            "resume_step_offset": int(resume_step_offset or 0),
+            "plot_paths": plot_paths,
+        },
+        output_dir / "run_summary.json",
+    )
     return output_dir

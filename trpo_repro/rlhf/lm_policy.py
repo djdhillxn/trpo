@@ -178,10 +178,13 @@ class TokenPolicyWithValue(nn.Module):
         load_in_4bit: bool = False,
         load_in_8bit: bool = False,
         trust_remote_code: bool = False,
+        strict: bool = True,
     ) -> "TokenPolicyWithValue":
         from peft import PeftModel
 
         checkpoint_dir = Path(checkpoint_dir)
+        if strict and not checkpoint_dir.exists():
+            raise FileNotFoundError(f"Policy checkpoint directory does not exist: {checkpoint_dir}")
         model = cls.from_model_name(
             base_model_name,
             torch_dtype=torch_dtype,
@@ -193,11 +196,19 @@ class TokenPolicyWithValue(nn.Module):
             trust_remote_code=trust_remote_code,
         )
         adapter_dir = checkpoint_dir / "adapter_or_model"
-        if adapter_dir.exists():
+        if not adapter_dir.exists():
+            if strict:
+                raise FileNotFoundError(
+                    f"Policy adapter/model directory missing: {adapter_dir}. "
+                    "If you intended to evaluate the base model, set checkpoint_dir: null."
+                )
+        else:
             model.backbone = PeftModel.from_pretrained(model.backbone, adapter_dir, is_trainable=True)
         value_head_path = checkpoint_dir / "value_head.pt"
         if value_head_path.exists():
             model.value_head.load_state_dict(torch.load(value_head_path, map_location="cpu"))
+        elif strict:
+            raise FileNotFoundError(f"Policy value head missing: {value_head_path}")
         return model
 
     def trainable_parameters(self):
@@ -250,10 +261,13 @@ class FrozenCausalLM(nn.Module):
         load_in_4bit: bool = False,
         load_in_8bit: bool = False,
         trust_remote_code: bool = False,
+        strict: bool = True,
     ) -> "FrozenCausalLM":
         from peft import PeftModel
 
         checkpoint_dir = Path(checkpoint_dir)
+        if strict and not checkpoint_dir.exists():
+            raise FileNotFoundError(f"Frozen policy checkpoint directory does not exist: {checkpoint_dir}")
         backbone = load_causal_lm(
             ModelLoadConfig(
                 model_name=base_model_name,
@@ -265,7 +279,10 @@ class FrozenCausalLM(nn.Module):
             )
         )
         adapter_dir = checkpoint_dir / "adapter_or_model"
-        if adapter_dir.exists():
+        if not adapter_dir.exists():
+            if strict:
+                raise FileNotFoundError(f"Frozen policy adapter/model directory missing: {adapter_dir}")
+        else:
             backbone = PeftModel.from_pretrained(backbone, adapter_dir, is_trainable=False)
         return cls(backbone)
 

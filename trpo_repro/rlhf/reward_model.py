@@ -224,8 +224,12 @@ class RewardModel(nn.Module):
         load_in_4bit: bool = False,
         load_in_8bit: bool = False,
         trust_remote_code: bool = False,
+        is_trainable: bool = False,
+        strict: bool = True,
     ) -> "RewardModel":
         checkpoint_dir = Path(checkpoint_dir)
+        if strict and not checkpoint_dir.exists():
+            raise FileNotFoundError(f"Reward checkpoint directory does not exist: {checkpoint_dir}")
         model = cls.from_model_name(
             base_model_name,
             torch_dtype=torch_dtype,
@@ -240,7 +244,12 @@ class RewardModel(nn.Module):
         if adapter_dir.exists():
             from peft import PeftModel
 
-            model.backbone = PeftModel.from_pretrained(model.backbone, adapter_dir)
+            model.backbone = PeftModel.from_pretrained(model.backbone, adapter_dir, is_trainable=is_trainable)
+        elif strict:
+            raise FileNotFoundError(
+                f"Reward adapter/model directory missing: {adapter_dir}. "
+                "Check that checkpoint_dir points at a saved reward checkpoint."
+            )
         reward_head_path = checkpoint_dir / "reward_head.pt"
         if reward_head_path.exists():
             model.reward_head.load_state_dict(torch.load(reward_head_path, map_location="cpu"))
