@@ -38,7 +38,7 @@ policies:
   - label: ppo_4096_u250
     # Newer training code saves outputs/.../checkpoints/update_00250.
     # If your run used the older layout, change this to outputs/.../checkpoint_00250.
-    checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_ppo_4096/checkpoints/update_00250
+    checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_ppo_4096/checkpoints/checkpoint_00250
 
 eval:
   output_dir: outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_u250
