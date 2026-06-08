@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import math
 import re
 from pathlib import Path
@@ -642,6 +643,110 @@ def _write_summary_markdown(summary: dict[str, Any], output_dir: Path) -> None:
     output_dir.joinpath("policy_suite_summary.md").write_text("".join(lines), encoding="utf-8")
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text atomically enough for Colab/Drive-style interrupted runs."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _append_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
+    """Append records to a JSONL file and flush to disk immediately."""
+    if not records:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        for rec in records:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        f.flush()
+        try:
+            import os
+
+            os.fsync(f.fileno())
+        except Exception:
+            pass
+
+
+def _read_jsonl_by_idx(path: Path) -> dict[int, dict[str, Any]]:
+    """Read a possibly-duplicated JSONL shard. Later rows overwrite earlier rows."""
+    out: dict[int, dict[str, Any]] = {}
+    if not path.exists():
+        return out
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+                out[int(rec["idx"])] = rec
+            except Exception:
+                # Ignore a final torn line from an interrupted Colab/Drive write.
+                continue
+    return out
+
+
+def _policy_shard_path(output_dir: Path, label: str, partial_subdir: str) -> Path:
+    return output_dir / partial_subdir / f"{_safe_label(label)}.jsonl"
+
+
+def _write_progress_manifest(
+    output_dir: Path,
+    *,
+    labels: list[str],
+    completed_by_label: dict[str, int],
+    total_records: int,
+    partial_subdir: str,
+) -> None:
+    manifest = {
+        "total_records": int(total_records),
+        "partial_subdir": partial_subdir,
+        "labels": labels,
+        "completed_by_label": {label: int(completed_by_label.get(label, 0)) for label in labels},
+        "complete": all(int(completed_by_label.get(label, 0)) >= int(total_records) for label in labels),
+    }
+    _atomic_write_text(output_dir / "policy_suite_progress.json", json.dumps(manifest, indent=2))
+
+
+def _finalize_policy_suite_outputs(
+    *,
+    output_dir: Path,
+    rows: list[dict[str, Any]],
+    labels: list[str],
+    tie_epsilon: float,
+    num_demo_rows: int,
+) -> None:
+    """Write final combined artifacts from already-populated rows."""
+    missing = []
+    for label in labels:
+        for row in rows:
+            if f"{label}_response" not in row or f"{label}_reward" not in row:
+                missing.append((label, row.get("idx")))
+                if len(missing) >= 5:
+                    break
+        if len(missing) >= 5:
+            break
+    if missing:
+        raise RuntimeError(
+            "Cannot finalize policy-suite eval because some policy outputs are missing. "
+            f"Examples: {missing}. Re-run with resume enabled to complete them."
+        )
+
+    _add_comparisons(rows, labels, tie_epsilon)
+    summary = _summarize(rows, labels, tie_epsilon)
+    pairwise_rows = summary.pop("pairwise_rows", [])
+
+    save_jsonl(rows, output_dir / "policy_suite_samples.jsonl")
+    write_csv(rows, output_dir / "policy_suite_samples.csv")
+    write_json(summary, output_dir / "policy_suite_summary.json")
+    write_csv(pairwise_rows, output_dir / "policy_suite_pairwise_summary.csv")
+    _write_excel_if_available(rows, output_dir / "policy_suite_samples.xlsx")
+    _write_markdown(rows, labels, output_dir / "policy_suite_demo.md", num_demo_rows)
+    _write_summary_markdown(summary, output_dir)
+    _write_plots(rows, labels, output_dir / "plots")
+
+
 def run_policy_suite_eval(config_path: str | Path, *, output_dir: str | Path | None = None) -> Path:
     cfg = load_config(config_path)
     output_dir = Path(output_dir or cfg.eval.get("output_dir", "outputs/rlhf/qwen25_05b_helpsteer3_eval_suite"))
@@ -673,7 +778,9 @@ def run_policy_suite_eval(config_path: str | Path, *, output_dir: str | Path | N
     tie_epsilon = float(cfg.eval.get("tie_epsilon", 0.0))
     load_mode = str(cfg.eval.get("load_mode", "resident")).lower().strip()
 
-    reward_model = _load_reward_model(cfg, device)
+    resume = bool(cfg.eval.get("resume", True))
+    finalize_only = bool(cfg.eval.get("finalize_only", False))
+    partial_subdir = str(cfg.eval.get("partial_subdir", "partial_policy_outputs"))
 
     rows: list[dict[str, Any]] = []
     for idx, record in enumerate(records):
@@ -686,29 +793,96 @@ def run_policy_suite_eval(config_path: str | Path, *, output_dir: str | Path | N
             }
         )
 
+    # Hydrate rows from per-policy shards written by previous interrupted runs.
+    completed_by_label: dict[str, int] = {}
+    for label in labels:
+        existing = _read_jsonl_by_idx(_policy_shard_path(output_dir, label, partial_subdir)) if resume else {}
+        for idx, rec in existing.items():
+            if 0 <= idx < len(rows):
+                for key, value in rec.items():
+                    if key != "idx":
+                        rows[idx][key] = value
+        completed_by_label[label] = sum(1 for row in rows if f"{label}_response" in row and f"{label}_reward" in row)
+
+    _write_progress_manifest(
+        output_dir,
+        labels=labels,
+        completed_by_label=completed_by_label,
+        total_records=len(rows),
+        partial_subdir=partial_subdir,
+    )
+
+    if finalize_only:
+        _finalize_policy_suite_outputs(
+            output_dir=output_dir,
+            rows=rows,
+            labels=labels,
+            tie_epsilon=tie_epsilon,
+            num_demo_rows=int(cfg.eval.get("num_demo_rows", 12)),
+        )
+        return output_dir
+
+    reward_model = _load_reward_model(cfg, device)
+
     def fill_policy_outputs(policy: TokenPolicyWithValue, label: str) -> None:
-        for start in tqdm(range(0, len(prompts), batch_size), desc=f"eval {label}"):
-            batch_prompts = prompts[start : start + batch_size]
+        shard_path = _policy_shard_path(output_dir, label, partial_subdir)
+        pending_indices = [
+            idx
+            for idx, row in enumerate(rows)
+            if not (resume and f"{label}_response" in row and f"{label}_reward" in row)
+        ]
+        if not pending_indices:
+            print(f"eval {label}: already complete ({len(rows)}/{len(rows)}); skipping")
+            return
+
+        pbar = tqdm(range(0, len(pending_indices), batch_size), desc=f"eval {label}")
+        for offset in pbar:
+            batch_indices = pending_indices[offset : offset + batch_size]
+            batch_prompts = [prompts[i] for i in batch_indices]
             outputs = _generate_and_score(policy, reward_model, tokenizer, batch_prompts, generation=generation, device=device)
-            for i, out in enumerate(outputs):
-                row = rows[start + i]
-                row[f"{label}_response"] = out["response"]
-                row[f"{label}_reward"] = out["reward"]
-                row[f"{label}_response_tokens"] = out["response_tokens"]
-                row[f"{label}_response_chars"] = out["response_chars"]
-                row[f"{label}_prompt_tokens"] = out["prompt_tokens"]
-                row[f"{label}_total_tokens"] = out["total_tokens"]
-                row[f"{label}_hit_eos"] = out["hit_eos"]
-                row[f"{label}_cap_hit"] = out["cap_hit"]
-                row[f"{label}_empty"] = out["empty"]
+            shard_records: list[dict[str, Any]] = []
+            for idx, out in zip(batch_indices, outputs):
+                row = rows[idx]
+                update = {
+                    "idx": int(idx),
+                    "domain": row.get("domain", "unknown"),
+                    "language": row.get("language", "unknown"),
+                    f"{label}_response": out["response"],
+                    f"{label}_reward": out["reward"],
+                    f"{label}_response_tokens": out["response_tokens"],
+                    f"{label}_response_chars": out["response_chars"],
+                    f"{label}_prompt_tokens": out["prompt_tokens"],
+                    f"{label}_total_tokens": out["total_tokens"],
+                    f"{label}_hit_eos": out["hit_eos"],
+                    f"{label}_cap_hit": out["cap_hit"],
+                    f"{label}_empty": out["empty"],
+                }
+                row.update(update)
+                shard_records.append(update)
+            _append_jsonl(shard_path, shard_records)
+            completed_by_label[label] = sum(1 for row in rows if f"{label}_response" in row and f"{label}_reward" in row)
+            _write_progress_manifest(
+                output_dir,
+                labels=labels,
+                completed_by_label=completed_by_label,
+                total_records=len(rows),
+                partial_subdir=partial_subdir,
+            )
+            pbar.set_postfix(done=completed_by_label[label], total=len(rows))
+
+    def label_complete(label: str) -> bool:
+        return all(f"{label}_response" in row and f"{label}_reward" in row for row in rows)
 
     if load_mode == "resident":
-        policies = [(spec["label"], _load_policy(cfg, spec, device)) for spec in specs]
+        policies = [(spec["label"], _load_policy(cfg, spec, device)) for spec in specs if not label_complete(spec["label"])]
         for label, policy in policies:
             fill_policy_outputs(policy, label)
     elif load_mode == "sequential":
         for spec in specs:
             label = spec["label"]
+            if label_complete(label):
+                print(f"eval {label}: already complete ({len(rows)}/{len(rows)}); skipping load")
+                continue
             policy = _load_policy(cfg, spec, device)
             fill_policy_outputs(policy, label)
             del policy
@@ -717,16 +891,11 @@ def run_policy_suite_eval(config_path: str | Path, *, output_dir: str | Path | N
     else:
         raise ValueError("eval.load_mode must be 'resident' or 'sequential'.")
 
-    _add_comparisons(rows, labels, tie_epsilon)
-    summary = _summarize(rows, labels, tie_epsilon)
-    pairwise_rows = summary.pop("pairwise_rows", [])
-
-    save_jsonl(rows, output_dir / "policy_suite_samples.jsonl")
-    write_csv(rows, output_dir / "policy_suite_samples.csv")
-    write_json(summary, output_dir / "policy_suite_summary.json")
-    write_csv(pairwise_rows, output_dir / "policy_suite_pairwise_summary.csv")
-    _write_excel_if_available(rows, output_dir / "policy_suite_samples.xlsx")
-    _write_markdown(rows, labels, output_dir / "policy_suite_demo.md", int(cfg.eval.get("num_demo_rows", 12)))
-    _write_summary_markdown(summary, output_dir)
-    _write_plots(rows, labels, output_dir / "plots")
+    _finalize_policy_suite_outputs(
+        output_dir=output_dir,
+        rows=rows,
+        labels=labels,
+        tie_epsilon=tie_epsilon,
+        num_demo_rows=int(cfg.eval.get("num_demo_rows", 12)),
+    )
     return output_dir
