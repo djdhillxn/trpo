@@ -7,7 +7,7 @@ model:
   policy_load_in_8bit: false
 
 reward_model:
-  checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_reward_4096/checkpoint_best
+  checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_reward_4096_epoch2/checkpoint_best
   torch_dtype: bfloat16
   device_map: null
   load_in_4bit: false
@@ -25,8 +25,8 @@ generation:
   temperature: 0.7
   top_p: 0.9
   do_sample: false
-  repetition_penalty: 1.03
-  no_repeat_ngram_size: 3
+  repetition_penalty: 1.0
+  no_repeat_ngram_size: 0
 
 # One list, one evaluator, all pairwise comparisons derived from the same generations.
 # For interrupted PPO runs, point directly to whichever checkpoint exists.
@@ -35,21 +35,25 @@ policies:
     checkpoint_dir: null
   - label: sft_4096
     checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_sft_4096/checkpoint_final
-  - label: ppo_4096_u250
-    # Newer training code saves outputs/.../checkpoints/update_00250.
-    # If your run used the older layout, change this to outputs/.../checkpoint_00250.
-    checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_ppo_4096/checkpoints/update_00250
+  - label: ppo_4096_ep2_u400
+    checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_ppo_4096_epoch2_long512/checkpoints/update_00400
+
 
 eval:
-  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_u250
+  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400
   device: cuda
   seed: 839
   shuffle: true
   # Use 200 first. Change to all for the full 2017-example validation pass.
-  num_prompts: 200
-  batch_size: 1
+  num_prompts: all
+  batch_size: 8
   num_demo_rows: 16
   tie_epsilon: 0.0
   # resident = load all policies once; fastest but more VRAM.
   # sequential = one policy at a time; slower but safer if long 512-token eval OOMs.
   load_mode: resident
+
+  # New resumability options
+  resume: true
+  partial_subdir: partial_policy_outputs
+  finalize_only: false
