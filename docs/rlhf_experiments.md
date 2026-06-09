@@ -1,6 +1,6 @@
 # RLHF Experiment Log
 
-This file records the main RLHF experiments and the reasoning behind the final run. It is deliberately more candid than a polished portfolio page: it includes the failures that shaped the final configuration.
+This file records the main RLHF experiments, including the failures that shaped the final configuration.
 
 ## Phase 0: Goal
 
@@ -23,9 +23,9 @@ Base vs SFT vs PPO responses
 The early runs used short response caps such as 96 or 128 generated tokens. This made debugging faster but created two problems:
 
 1. many generated answers were visibly truncated;
-2. the evaluation examples were not suitable for a portfolio because code and explanatory responses ended halfway.
+2. code and explanatory responses often ended halfway, making qualitative comparison difficult.
 
-The early PPO experiments also exposed real RLHF failure modes:
+The early PPO experiments also exposed several RLHF failure modes:
 
 - gibberish/multilingual drift,
 - vulgar/debug-pattern generations,
@@ -33,7 +33,7 @@ The early PPO experiments also exposed real RLHF failure modes:
 - overzealous reward shaping,
 - evaluation bugs caused by wrong checkpoint paths.
 
-These were useful failures. They forced the addition of stronger prompt sanitation, KL anchoring, empty-response checks, anti-repetition checks, and checkpoint validation.
+These failures led to stronger prompt sanitation, KL anchoring, empty-response checks, anti-repetition checks, and checkpoint validation.
 
 ## Phase 2: Token-length diagnostic
 
@@ -46,7 +46,7 @@ A length diagnostic over HelpSteer3 showed that the original 1024-token SFT/RM l
 | 3072 | 5.28% | 5.83% | 4.69% | 5.32% |
 | 4096 | 0.83% | 1.00% | 0.68% | 0.89% |
 
-The project therefore moved to 4096-token SFT/RM training. This was the single biggest correction in the pipeline.
+The project therefore moved to 4096-token SFT/RM training, reducing truncation on the training data to about 1%.
 
 ## Phase 3: SFT-4096
 
@@ -155,10 +155,6 @@ outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400/
 - PPO and SFT both produced many long complete responses, unlike the early 128-token runs.
 - The full run is therefore more useful qualitatively than the early runs, even though aggregate PPO win rate is mixed.
 
-## Final interpretation
+## Conclusion
 
-This phase should be written as:
-
-> I built and debugged an end-to-end RLHF pipeline for Qwen2.5-0.5B-Instruct using HelpSteer3. The final long-context reward model reached 71.62% pairwise validation accuracy. PPO training was stable and produced complete long-form outputs, but did not globally outperform the base instruction model under the learned reward model. The project is valuable as an implementation, diagnostics, and RLHF systems exercise, not as a claim that a small PPO adapter beats a production instruction model.
-
-That is a strong and honest portfolio story.
+The experiments produced an end-to-end RLHF pipeline for Qwen2.5-0.5B-Instruct using HelpSteer3. The final long-context reward model reached 71.62% pairwise validation accuracy. PPO training was stable and produced complete long-form outputs, but did not globally outperform the base instruction model under the learned reward model. The main result is the implementation and its diagnostics, rather than evidence that a small PPO adapter can beat a production instruction model.

@@ -1,17 +1,17 @@
 # RLHF Post-Training with Qwen2.5, HelpSteer3, and Token-Level PPO
 
-This document is the main entry point for the RLHF extension of the original TRPO / NPG / PPO repository. The original project studied policy optimization on MuJoCo and Atari. This extension asks a more application-facing question:
+This document is the main entry point for the RLHF extension of the original TRPO / NPG / PPO repository. The original project studied policy optimization on MuJoCo and Atari. This extension applies the same ideas to language-model post-training:
 
 > Can the same PPO trust-region idea be adapted from environment rollouts to language-model post-training?
 
-The implementation trains a small but real RLHF pipeline around **Qwen2.5-0.5B-Instruct** and **NVIDIA HelpSteer3**:
+The implementation trains an RLHF pipeline around **Qwen2.5-0.5B-Instruct** and **NVIDIA HelpSteer3**:
 
 1. supervised fine-tuning (SFT) on preferred HelpSteer3 responses,
 2. reward-model training from HelpSteer3 chosen/rejected preference pairs,
 3. KL-controlled token-level PPO on sampled LLM responses,
 4. policy-suite evaluation comparing Base, SFT, and PPO responses on the same prompts.
 
-The important outcome is not that this small student-scale run beats a modern instruction-tuned model. It does not. The important outcome is that the repository now contains an end-to-end, debuggable RLHF pipeline with real failure modes, long-context data handling, reward-model diagnostics, PPO checkpoints, resumable evaluation, and qualitative example curation.
+This student-scale run does not beat a modern instruction-tuned model. It does provide an end-to-end, debuggable RLHF pipeline with documented failure modes, long-context data handling, reward-model diagnostics, PPO checkpoints, resumable evaluation, and qualitative example curation.
 
 ## Why this belongs in a TRPO/PPO repository
 
@@ -51,9 +51,9 @@ You are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>
 <|im_start|>assistant
 ```
 
-This formatting is not arbitrary. It is the format expected by Qwen chat/instruct models through `tokenizer.apply_chat_template(...)`.
+Qwen chat/instruct models expect this format, which is produced through `tokenizer.apply_chat_template(...)`.
 
-## Final run: the “FullMonty” configuration
+## Final long-context configuration
 
 Earlier experiments used short output budgets such as 128 new tokens. Those runs were useful for debugging, but they clipped many responses and were not suitable for qualitative examples. We therefore ran a final long-context version.
 
@@ -66,7 +66,7 @@ Earlier experiments used short output budgets such as 128 new tokens. Those runs
 | Evaluation max prompt length | 3072 prompt tokens |
 | Evaluation max generated response length | 512 new tokens |
 
-These values are still below Qwen2.5's full advertised context/generation capacity, but they are large enough to avoid the severe truncation problems of the early runs and large enough to produce complete portfolio examples.
+These values are still below Qwen2.5's full advertised context/generation capacity, but they avoid the severe truncation problems of the early runs and allow complete qualitative comparisons.
 
 ## Why 4096 mattered
 
@@ -79,7 +79,7 @@ A token-length diagnostic showed that the earlier 1024-token SFT/RM cap was too 
 | 3072 | 5.28% | 5.83% | 4.69% | 5.32% |
 | 4096 | 0.83% | 1.00% | 0.68% | 0.89% |
 
-So the final 4096-token SFT/RM run was not cosmetic. It changed the amount of data the model actually saw.
+At 4096 tokens, the training stages retain substantially more of each example.
 
 ## Training stages
 
@@ -125,7 +125,7 @@ Final reward-model result:
 | STEM accuracy | 63.37% |
 | multilingual accuracy | 75.15% |
 
-This is good enough to drive PPO, but it is not a perfect judge. All reward-model-based win rates should therefore be interpreted as proxy metrics, not ground truth human preference.
+The model is useful as a PPO training signal, but it is not a perfect judge. Reward-model-based win rates are proxy metrics rather than ground-truth human preferences.
 
 ### 3. PPO post-training
 
@@ -185,7 +185,7 @@ Final evaluation:
 | Base vs PPO | 1068 | 904 | 45 | 44.82% | -0.1327 |
 | SFT vs PPO | 965 | 898 | 154 | 44.52% | -0.2386 |
 
-The honest conclusion is:
+The results indicate:
 
 > The final PPO policy is stable and produces long, complete responses, but it does not globally beat the base or SFT policy under the learned reward model. SFT modestly improves mean reward over base but loses pairwise more often than it wins. PPO wins a large minority of prompts and yields useful qualitative examples, but its aggregate reward-model performance is mixed.
 
@@ -195,24 +195,24 @@ The reward model outputs scalar scores on an arbitrary learned scale. The absolu
 
 It is also normal for reward distributions to look roughly bell-shaped. The reward head is a learned scalar regressor/ranker on top of transformer representations. After training, many examples cluster near the model's typical score range, while outliers appear for unusually preferred or dispreferred responses. In PPO training we clipped rewards to control optimization, but the evaluation plots show raw reward-model outputs.
 
-## What this project demonstrates
+## Scope and findings
 
-This phase is portfolio-worthy if framed correctly. It demonstrates:
+The implementation includes:
 
-- an end-to-end RLHF pipeline, not just a TRL one-liner;
+- an end-to-end RLHF pipeline;
 - long-context SFT and reward-model training;
 - pairwise reward modeling with domain-level diagnostics;
 - token-level PPO with KL anchoring to a frozen SFT reference;
-- multiple real RLHF failure modes and fixes: gibberish drift, vulgar output, EOS/blank collapse, wrong checkpoint loading, and non-resumable long evaluation;
-- honest full-validation policy-suite evaluation;
+- observed RLHF failure modes and fixes: gibberish drift, vulgar output, EOS/blank collapse, wrong checkpoint loading, and non-resumable long evaluation;
+- full-validation policy-suite evaluation;
 - curation tooling to inspect both wins and failures.
 
-It does **not** demonstrate that a 0.5B student-trained PPO adapter beats Qwen2.5-Instruct at scale. The right story is that the pipeline is technically serious, the reward model is credible, PPO is stable, but the empirical gain is mixed.
+The results do **not** show that a 0.5B PPO adapter beats Qwen2.5-Instruct at scale. The reward model provides a usable training signal and PPO remains stable, but the aggregate empirical gain is mixed.
 
 ## Recommended reading order
 
 - [`docs/rlhf_experiments.md`](rlhf_experiments.md): experiment timeline, failed runs, final metrics.
 - [`docs/rlhf_technical_notes.md`](rlhf_technical_notes.md): SFT/RM/PPO mechanics and why the hyperparameters matter.
-- [`docs/rlhf_curation_guide.md`](rlhf_curation_guide.md): how to pick portfolio examples from the final evaluation CSV.
+- [`docs/rlhf_curation_guide.md`](rlhf_curation_guide.md): how to inspect and select examples from the final evaluation CSV.
 - `notebooks/analyzing_full_eval_results.ipynb`: summary analysis notebook for the final policy-suite outputs.
-- `notebooks/rlhf_full_eval_and_curation.ipynb`: interactive example browser and poster-child curation notebook.
+- `notebooks/rlhf_full_eval_and_curation.ipynb`: interactive example browser and curation notebook.

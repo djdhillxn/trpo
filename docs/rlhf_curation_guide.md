@@ -1,6 +1,6 @@
 # RLHF Curation Guide
 
-The final aggregate PPO win rate is mixed, so the portfolio should not rely on a single headline number. Instead, use the final policy-suite outputs to show both wins and failures.
+The final aggregate PPO win rate is mixed, so no single headline number captures the result. The policy-suite outputs are most useful when reviewed across both wins and failures.
 
 Main file:
 
@@ -12,15 +12,15 @@ This file contains the full prompt, Base response, SFT response, PPO response, r
 
 ## Recommended example categories
 
-Pick 8-12 examples across these buckets:
+Review 8-12 examples across these buckets:
 
 1. **Clear PPO wins**: PPO reward higher than both Base and SFT, and the response is visibly more direct/useful.
 2. **SFT wins**: shows that supervised alignment did meaningful work.
-3. **Base wins**: honest failure cases where the original instruction model remains stronger.
+3. **Base wins**: failure cases where the original instruction model remains stronger.
 4. **Ties / near ties**: cases where all policies produce nearly identical outputs.
 5. **Bad PPO examples**: one or two examples where PPO rambles, repeats, or worsens the answer.
 
-This makes the portfolio more credible than showing only cherry-picked successes.
+Including failures avoids presenting a cherry-picked view of the results.
 
 ## Useful filters
 
@@ -51,7 +51,7 @@ sft_wins = df[
 
 ## Initial candidate indices
 
-These are not final portfolio selections; they are starting points for manual review.
+These are starting points for manual review, not final selections.
 
 | Index | Why inspect it |
 |---:|---|
@@ -61,16 +61,12 @@ These are not final portfolio selections; they are starting points for manual re
 | 966 | Python/code example where PPO beats both Base and SFT by reward model |
 | 1040 | multilingual example where PPO beats both Base and SFT |
 | 1496 | general example where PPO gives much longer answer than short/refusal-like alternatives |
-| 1485 | strong PPO failure; useful as honest negative example |
+| 1485 | strong PPO failure; useful as a negative example |
 | 11 | SFT/PPO degenerate repetition; useful to discuss failure modes |
 | 353 | PPO produces unsafe/strange continuation; useful as a failure case |
 
 Use the curation notebook to inspect full text before publishing any example. Some high-reward examples may contain factual errors or may only win because the reward model prefers length/formatting.
 
-## Portfolio framing
+## Summary
 
-Recommended wording:
-
-> The final PPO policy did not dominate the base instruction model in aggregate, but the project produced a real RLHF pipeline and a set of instructive qualitative examples. The most valuable part of the work was debugging the alignment stack: long-context SFT/RM coverage, reward-model accuracy, KL-controlled PPO, checkpoint validation, and full-suite evaluation.
-
-This is more credible than claiming universal improvement.
+The final PPO policy did not dominate the base instruction model in aggregate. The main outcomes are a working RLHF pipeline, instructive qualitative examples, and diagnostics covering long-context SFT/RM data coverage, reward-model accuracy, KL-controlled PPO, checkpoint validation, and full-suite evaluation.

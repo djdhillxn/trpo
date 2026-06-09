@@ -34,7 +34,7 @@ L_RM(phi) = - log sigmoid(r_phi(chosen) - r_phi(rejected))
 
 A good reward model should assign higher score to the chosen response than the rejected response. The final 4096-token epoch-2 reward model reached 71.62% validation accuracy on 1917 preference pairs.
 
-### Why negative rewards are okay
+### Interpreting negative rewards
 
 The reward model's scalar output is not calibrated to an external human score. Adding a constant to all rewards would not change pairwise preferences. The sign is therefore not intrinsically meaningful. A response with score `-3.5` can still be better than another response with score `-5.0` for the same prompt.
 
@@ -116,7 +116,7 @@ Several reasons are plausible:
 5. **Reward-model mismatch.** The reward model is trained on chosen/rejected pairs; PPO optimizes generated responses that may differ from the training distribution.
 6. **Long generation variance.** 512-token generations create more opportunity for both helpful detail and reward-hacking/noisy continuations.
 
-The correct interpretation is not failure; it is a realistic result from a small-model RLHF experiment.
+These constraints help explain why the small-model RLHF experiment produced stable training without a clear aggregate improvement.
 
 ## 8. Main artifacts
 
