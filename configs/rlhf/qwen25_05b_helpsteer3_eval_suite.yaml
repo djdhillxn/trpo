@@ -49,7 +49,8 @@ eval:
   shuffle: true
   # Use 200 first. Change to all for the full 2017-example validation pass.
   num_prompts: all
-  batch_size: 8
+  # The completed 1024-token A100 run used 128. Reduce this on smaller GPUs.
+  batch_size: 128
   num_demo_rows: 16
   tie_epsilon: 0.0
   # resident = load all policies once; fastest but more VRAM.
