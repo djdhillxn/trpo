@@ -170,7 +170,7 @@ Reference implementations:
 
 This repository now includes an application-oriented RLHF extension under `trpo_repro/rlhf/`. The extension adapts the same conservative policy-optimization story from the original TRPO/PPO project to LLM post-training: supervised fine-tuning, pairwise reward modeling, KL-controlled token-level PPO using LoRA adapters, and policy-suite evaluation of Base/SFT/PPO responses.
 
-The final long-context run uses Qwen2.5-0.5B-Instruct with HelpSteer3, 4096-token SFT/reward-model training, 3072-token PPO prompts, and 512-token PPO/evaluation generations. The result is a realistic student-scale RLHF system: the reward model reaches 71.62% validation pairwise accuracy, PPO remains stable and generates full responses, but the base instruction model remains strongest overall under the learned reward model.
+The final long-context run uses Qwen2.5-0.5B-Instruct with HelpSteer3, 4096-token SFT/reward-model training, and 3072-token PPO prompts with 512-token PPO rollouts. The evaluation config allows up to 1024 new tokens at inference time while keeping the prompt-plus-response budget at 4096. The reported full-suite metrics come from the earlier 512-token evaluation: the reward model reaches 71.62% validation pairwise accuracy, PPO remains stable and generates full responses, but the base instruction model remains strongest overall under the learned reward model.
 
 Start here: [`docs/rlhf_readme.md`](docs/rlhf_readme.md).
 

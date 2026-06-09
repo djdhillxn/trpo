@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import math
 import re
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -668,7 +670,7 @@ def _append_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
             pass
 
 
-def _read_jsonl_by_idx(path: Path) -> dict[int, dict[str, Any]]:
+def _read_jsonl_by_idx(path: Path, *, expected_signature: str | None = None) -> dict[int, dict[str, Any]]:
     """Read a possibly-duplicated JSONL shard. Later rows overwrite earlier rows."""
     out: dict[int, dict[str, Any]] = {}
     if not path.exists():
@@ -680,11 +682,42 @@ def _read_jsonl_by_idx(path: Path) -> dict[int, dict[str, Any]]:
                 continue
             try:
                 rec = json.loads(line)
+                if expected_signature is not None and rec.get("_eval_signature") != expected_signature:
+                    continue
                 out[int(rec["idx"])] = rec
             except Exception:
                 # Ignore a final torn line from an interrupted Colab/Drive write.
                 continue
     return out
+
+
+def _evaluation_signature(cfg: Any, specs: list[dict[str, Any]], generation: GenerationConfig, records: list[dict[str, Any]]) -> str:
+    """Fingerprint inputs that determine cached policy responses and rewards."""
+    record_digest = hashlib.sha256()
+    for record in records:
+        record_digest.update(
+            json.dumps(
+                {
+                    "prompt": record.get("prompt"),
+                    "domain": record.get("domain"),
+                    "language": record.get("language"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+        record_digest.update(b"\n")
+
+    payload = {
+        "signature_version": 1,
+        "model": dict(cfg.model),
+        "reward_model": dict(cfg.reward_model),
+        "policies": specs,
+        "generation": asdict(generation),
+        "records_sha256": record_digest.hexdigest(),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _policy_shard_path(output_dir: Path, label: str, partial_subdir: str) -> Path:
@@ -694,12 +727,14 @@ def _policy_shard_path(output_dir: Path, label: str, partial_subdir: str) -> Pat
 def _write_progress_manifest(
     output_dir: Path,
     *,
+    eval_signature: str,
     labels: list[str],
     completed_by_label: dict[str, int],
     total_records: int,
     partial_subdir: str,
 ) -> None:
     manifest = {
+        "eval_signature": eval_signature,
         "total_records": int(total_records),
         "partial_subdir": partial_subdir,
         "labels": labels,
@@ -774,6 +809,7 @@ def run_policy_suite_eval(config_path: str | Path, *, output_dir: str | Path | N
     specs = _policy_specs(cfg)
     labels = [s["label"] for s in specs]
     generation = GenerationConfig(**dict(cfg.get("generation", {})))
+    eval_signature = _evaluation_signature(cfg, specs, generation, records)
     batch_size = int(cfg.eval.get("batch_size", 2))
     tie_epsilon = float(cfg.eval.get("tie_epsilon", 0.0))
     load_mode = str(cfg.eval.get("load_mode", "resident")).lower().strip()
@@ -796,16 +832,24 @@ def run_policy_suite_eval(config_path: str | Path, *, output_dir: str | Path | N
     # Hydrate rows from per-policy shards written by previous interrupted runs.
     completed_by_label: dict[str, int] = {}
     for label in labels:
-        existing = _read_jsonl_by_idx(_policy_shard_path(output_dir, label, partial_subdir)) if resume else {}
+        existing = (
+            _read_jsonl_by_idx(
+                _policy_shard_path(output_dir, label, partial_subdir),
+                expected_signature=eval_signature,
+            )
+            if resume
+            else {}
+        )
         for idx, rec in existing.items():
             if 0 <= idx < len(rows):
                 for key, value in rec.items():
-                    if key != "idx":
+                    if key not in {"idx", "_eval_signature"}:
                         rows[idx][key] = value
         completed_by_label[label] = sum(1 for row in rows if f"{label}_response" in row and f"{label}_reward" in row)
 
     _write_progress_manifest(
         output_dir,
+        eval_signature=eval_signature,
         labels=labels,
         completed_by_label=completed_by_label,
         total_records=len(rows),
@@ -858,11 +902,12 @@ def run_policy_suite_eval(config_path: str | Path, *, output_dir: str | Path | N
                     f"{label}_empty": out["empty"],
                 }
                 row.update(update)
-                shard_records.append(update)
+                shard_records.append({"_eval_signature": eval_signature, **update})
             _append_jsonl(shard_path, shard_records)
             completed_by_label[label] = sum(1 for row in rows if f"{label}_response" in row and f"{label}_reward" in row)
             _write_progress_manifest(
                 output_dir,
+                eval_signature=eval_signature,
                 labels=labels,
                 completed_by_label=completed_by_label,
                 total_records=len(rows),

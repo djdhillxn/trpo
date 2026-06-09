@@ -101,9 +101,9 @@ Final budgets:
 | PPO prompt | 3072 prompt tokens |
 | PPO response | 512 new tokens |
 | Evaluation prompt | 3072 prompt tokens |
-| Evaluation response | 512 new tokens |
+| Evaluation response | 1024 new tokens |
 
-This is a compromise between data coverage and compute. It is much less constrained than the early 128-token generation runs, and it is large enough for qualitative examples.
+PPO training keeps the 512-token rollout cap for compute control. Evaluation can use a larger inference budget; with a 3072-token prompt cap and 1024 new tokens, the full sequence remains within the 4096-token SFT/reward-model training budget.
 
 ## 7. Why PPO did not dominate
 

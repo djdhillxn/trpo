@@ -16,11 +16,12 @@ reward_model:
 data:
   eval_split: validation
 
-# This controls qualitative evaluation only, not training.
-# For the 512-token PPO checkpoint, keep 512 here if you want apples-to-apples long-form outputs.
+# This controls evaluation only. PPO rollouts were trained with 512 new tokens,
+# but inference can use a larger budget. 3072 prompt + 1024 response = 4096
+# total tokens, matching the SFT/reward-model training sequence budget.
 generation:
   max_prompt_length: 3072
-  max_new_tokens: 512
+  max_new_tokens: 1024
   min_new_tokens: 0
   temperature: 0.7
   top_p: 0.9
@@ -40,7 +41,9 @@ policies:
 
 
 eval:
-  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400
+  # Keep this separate from the completed 512-token evaluation. Resume shards
+  # are specific to the generation settings and must not be mixed.
+  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400_eval1024
   device: cuda
   seed: 839
   shuffle: true
@@ -50,7 +53,7 @@ eval:
   num_demo_rows: 16
   tie_epsilon: 0.0
   # resident = load all policies once; fastest but more VRAM.
-  # sequential = one policy at a time; slower but safer if long 512-token eval OOMs.
+  # sequential = one policy at a time; slower but safer if the 1024-token eval OOMs.
   load_mode: resident
 
   # New resumability options

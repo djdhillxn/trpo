@@ -64,9 +64,9 @@ Earlier experiments used short output budgets such as 128 new tokens. Those runs
 | PPO max prompt length | 3072 prompt tokens |
 | PPO max generated response length | 512 new tokens |
 | Evaluation max prompt length | 3072 prompt tokens |
-| Evaluation max generated response length | 512 new tokens |
+| Evaluation max generated response length | 1024 new tokens |
 
-These values are still below Qwen2.5's full advertised context/generation capacity, but they avoid the severe truncation problems of the early runs and allow complete qualitative comparisons.
+The evaluation budget is larger than the PPO rollout budget: inference is not required to use the same response cap as training. A 3072-token prompt plus 1024 generated tokens remains within the 4096-token sequence length used for SFT and reward-model training.
 
 ## Why 4096 mattered
 
@@ -151,7 +151,7 @@ Final PPO configuration:
 
 The PPO run did not collapse: empty-rate stayed at zero, response lengths remained long, and the checkpoint loaded correctly in the final suite evaluation. However, it did not outperform the base or SFT policies overall.
 
-## Final policy-suite evaluation
+## Reported 512-token policy-suite evaluation
 
 Instead of running three separate pairwise evaluations, the final evaluator generates Base, SFT, and PPO responses once per prompt, scores all three with the same reward model, and derives all pairwise comparisons from the same table.
 
@@ -167,6 +167,8 @@ Final evaluation:
 - prompt budget: 3072 tokens
 - generation budget: 512 tokens
 - policies: Base Qwen, SFT-4096, PPO-4096-epoch2-update400
+
+These metrics describe the completed 512-token evaluation. The current suite config raises the inference cap to 1024 tokens and writes to a separate output directory so the two runs remain comparable.
 
 ### Overall three-way winner counts
 
