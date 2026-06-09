@@ -1,109 +1,218 @@
-# RLHF Post-Training with Token-Level PPO
+# RLHF Post-Training with Qwen2.5, HelpSteer3, and Token-Level PPO
 
-This extension adapts the repository's PPO policy-optimization work from Gym/MuJoCo/Atari rollouts to language-model post-training.
+This document is the main entry point for the RLHF extension of the original TRPO / NPG / PPO repository. The original project studied policy optimization on MuJoCo and Atari. This extension asks a more application-facing question:
 
-The main experiment trains **Qwen2.5-0.5B-Instruct** with PPO on prompts derived from **HelpSteer3**. A reward model is first trained from HelpSteer3 chosen/rejected preference pairs. PPO then updates a LoRA policy adapter against reward-model scores while applying a KL penalty to a frozen reference copy of the starting model.
+> Can the same PPO trust-region idea be adapted from environment rollouts to language-model post-training?
 
-## Why this is separate from `trpo_repro.algos.ppo`
+The implementation trains a small but real RLHF pipeline around **Qwen2.5-0.5B-Instruct** and **NVIDIA HelpSteer3**:
 
-The original PPO implementation assumes fixed-shape observations and Gym actions. RLHF uses variable-length token sequences, response masks, token log-probs, a frozen reference model, and a reward model. The math is still PPO-Clip, but the data path is different, so the RLHF implementation lives under:
+1. supervised fine-tuning (SFT) on preferred HelpSteer3 responses,
+2. reward-model training from HelpSteer3 chosen/rejected preference pairs,
+3. KL-controlled token-level PPO on sampled LLM responses,
+4. policy-suite evaluation comparing Base, SFT, and PPO responses on the same prompts.
+
+The important outcome is not that this small student-scale run beats a modern instruction-tuned model. It does not. The important outcome is that the repository now contains an end-to-end, debuggable RLHF pipeline with real failure modes, long-context data handling, reward-model diagnostics, PPO checkpoints, resumable evaluation, and qualitative example curation.
+
+## Why this belongs in a TRPO/PPO repository
+
+The original repository was about conservative policy improvement: vanilla policy gradients can move the policy too far, while NPG, TRPO, and PPO measure or constrain policy movement in policy space. The RLHF extension keeps that same idea, but changes the environment:
+
+| Earlier project | RLHF extension |
+|---|---|
+| MuJoCo / Atari state | chat prompt tokens |
+| action | generated token |
+| rollout trajectory | prompt + generated response |
+| environment reward | learned scalar reward model |
+| old-policy KL / trust region | KL to frozen SFT reference model |
+| PPO update on action log-probs | PPO update on response-token log-probs |
+
+This is why the RLHF implementation lives under `trpo_repro/rlhf/` instead of directly reusing the Gym-oriented PPO code. The math is still PPO-Clip with a KL anchor, but the tensors, masking, sampling, and scoring pipeline are different.
+
+## Model and data
+
+### Base model
+
+We use `Qwen/Qwen2.5-0.5B-Instruct`, a 0.49B parameter instruction-tuned model. The Qwen2.5-0.5B-Instruct model card lists a **32,768-token context length** and **8,192-token generation length**. The model itself can therefore support far longer generations than we used, but full-length RLHF training is much more expensive than inference.
+
+### Dataset
+
+We use HelpSteer3 preference data. Each training example contains a conversation context, two candidate responses, domain/language metadata, and a preference score. The final run used the full train/validation splits after filtering invalid or tied preference rows.
+
+### Chat formatting
+
+HelpSteer3 stores messages in a chat-style format. Before training/evaluation, we render those messages with the Qwen tokenizer chat template:
 
 ```text
-trpo_repro/rlhf/
+<|im_start|>system
+You are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>
+<|im_start|>user
+...
+<|im_end|>
+<|im_start|>assistant
 ```
 
-## Pipeline
+This formatting is not arbitrary. It is the format expected by Qwen chat/instruct models through `tokenizer.apply_chat_template(...)`.
 
-1. Prepare HelpSteer3 preference pairs.
-2. Train a scalar reward model with pairwise ranking loss.
-3. Generate responses from the current policy.
-4. Score responses with the reward model.
-5. Add KL penalty against a frozen reference model.
-6. Compute token-level GAE and returns.
-7. Run PPO-Clip updates over response tokens only.
-8. Evaluate base-vs-PPO responses.
+## Final run: the “FullMonty” configuration
 
-## Install
+Earlier experiments used short output budgets such as 128 new tokens. Those runs were useful for debugging, but they clipped many responses and were not suitable for qualitative examples. We therefore ran a final long-context version.
+
+| Stage | Final setting |
+|---|---:|
+| SFT max sequence length | 4096 total tokens |
+| Reward-model max sequence length | 4096 total tokens |
+| PPO max prompt length | 3072 prompt tokens |
+| PPO max generated response length | 512 new tokens |
+| Evaluation max prompt length | 3072 prompt tokens |
+| Evaluation max generated response length | 512 new tokens |
+
+These values are still below Qwen2.5's full advertised context/generation capacity, but they are large enough to avoid the severe truncation problems of the early runs and large enough to produce complete portfolio examples.
+
+## Why 4096 mattered
+
+A token-length diagnostic showed that the earlier 1024-token SFT/RM cap was too small for HelpSteer3:
+
+| Limit | Train SFT truncation | Train RM truncation | Validation SFT truncation | Validation RM truncation |
+|---:|---:|---:|---:|---:|
+| 1024 | 38.47% | 40.82% | 36.78% | 39.49% |
+| 2048 | 15.48% | 16.47% | 13.51% | 14.87% |
+| 3072 | 5.28% | 5.83% | 4.69% | 5.32% |
+| 4096 | 0.83% | 1.00% | 0.68% | 0.89% |
+
+So the final 4096-token SFT/RM run was not cosmetic. It changed the amount of data the model actually saw.
+
+## Training stages
+
+### 1. SFT policy
 
 ```bash
-pip install -r requirements-rlhf.txt
-pip install -e .
+python scripts/rlhf_train_sft_policy.py \
+  --config configs/rlhf/qwen25_05b_helpsteer3_sft.yaml
 ```
 
-On Colab, use a GPU runtime. The configs default to 4-bit loading for the trainable policy, frozen reference model, and frozen reward model to reduce memory use.
+Final SFT configuration:
 
-## Run
+- base model: `Qwen/Qwen2.5-0.5B-Instruct`
+- LoRA rank: 16
+- max length: 4096
+- epochs: 2
+- batch size: 6
+- gradient accumulation: 3
+- learning rate: `5e-6`
+- output: `outputs/rlhf/qwen25_05b_helpsteer3_sft_4096/`
 
-### 1. Reward model
+The SFT stage teaches the policy to imitate the preferred HelpSteer3 response. It is the supervised alignment baseline and also the starting/reference policy for PPO.
+
+### 2. Reward model
 
 ```bash
 python scripts/rlhf_train_reward_model.py \
   --config configs/rlhf/qwen25_05b_helpsteer3_reward.yaml
 ```
 
-Outputs:
+The final reward model was trained in two one-epoch runs: first from Qwen, then resumed from the best checkpoint for a second epoch.
 
-```text
-outputs/rlhf/qwen25_05b_helpsteer3_reward/
-  checkpoint_final/
-  train_metrics.jsonl
-  eval_metrics.jsonl
-  final_eval_metrics.json
-```
+Final reward-model result:
 
-### 2. PPO post-training
+| Metric | Value |
+|---|---:|
+| validation pairs | 1917 |
+| validation accuracy | 71.62% |
+| validation loss | 0.9734 |
+| average reward margin | 0.9094 |
+| code accuracy | 74.88% |
+| general accuracy | 71.01% |
+| STEM accuracy | 63.37% |
+| multilingual accuracy | 75.15% |
+
+This is good enough to drive PPO, but it is not a perfect judge. All reward-model-based win rates should therefore be interpreted as proxy metrics, not ground truth human preference.
+
+### 3. PPO post-training
 
 ```bash
 python scripts/rlhf_train_ppo.py \
   --config configs/rlhf/qwen25_05b_helpsteer3_ppo.yaml
 ```
 
-Outputs:
+Final PPO configuration:
 
-```text
-outputs/rlhf/qwen25_05b_helpsteer3_ppo/
-  checkpoint_final/
-  ppo_metrics.jsonl
-  samples/
-```
+- initial policy: `outputs/rlhf/qwen25_05b_helpsteer3_sft_4096/checkpoint_final`
+- frozen reference: same SFT checkpoint
+- reward model: `outputs/rlhf/qwen25_05b_helpsteer3_reward_4096_epoch2/checkpoint_best`
+- max prompt length: 3072
+- max new tokens: 512
+- LoRA rank: 16
+- total updates: 400 requested; 397 completed
+- PPO epochs per rollout batch: 1
+- learning rate: `3e-7`
+- clip range: 0.06
+- KL coefficient: initialized at 0.18 with minimum 0.14
+- output: `outputs/rlhf/qwen25_05b_helpsteer3_ppo_4096_epoch2_long512/`
 
-### 3. Before/after evaluation
+The PPO run did not collapse: empty-rate stayed at zero, response lengths remained long, and the checkpoint loaded correctly in the final suite evaluation. However, it did not outperform the base or SFT policies overall.
+
+## Final policy-suite evaluation
+
+Instead of running three separate pairwise evaluations, the final evaluator generates Base, SFT, and PPO responses once per prompt, scores all three with the same reward model, and derives all pairwise comparisons from the same table.
 
 ```bash
-python scripts/rlhf_evaluate_before_after.py \
-  --config configs/rlhf/qwen25_05b_helpsteer3_eval.yaml
+python scripts/rlhf_evaluate_policy_suite.py \
+  --config configs/rlhf/qwen25_05b_helpsteer3_eval_suite.yaml
 ```
 
-Outputs:
+Final evaluation:
 
-```text
-outputs/rlhf/qwen25_05b_helpsteer3_eval/
-  before_after_samples.jsonl
-  before_after_samples.csv
-  before_after_demo.md
-```
+- split: HelpSteer3 validation
+- examples: 2017
+- prompt budget: 3072 tokens
+- generation budget: 512 tokens
+- policies: Base Qwen, SFT-4096, PPO-4096-epoch2-update400
 
-## Key metrics
+### Overall three-way winner counts
 
-- `reward_model_score`: learned reward model score for generated responses.
-- `objective_kl`: token-level KL estimate between policy and frozen reference.
-- `non_score_reward`: KL penalty contribution.
-- `total_reward`: final reward signal used by PPO.
-- `approx_kl`: PPO old-policy vs updated-policy KL estimate.
-- `clip_fraction`: fraction of tokens where PPO ratio was clipped.
-- `value_explained_variance`: critic fit quality.
+| Policy | Wins | Win rate | Mean reward | Median response tokens | Cap-hit rate | Empty rate |
+|---|---:|---:|---:|---:|---:|---:|
+| Base | 827 | 41.00% | -3.5339 | 332 | 29.90% | 0.00% |
+| SFT-4096 | 556 | 27.57% | -3.4280 | 363 | 29.95% | 0.00% |
+| PPO-4096 | 525 | 26.03% | -3.6666 | 356 | 29.70% | 0.00% |
+| Tie | 109 | 5.40% | — | — | — | — |
 
-## Colab tips
+### Pairwise comparisons
 
-Start with the provided small settings:
+| Comparison | Left wins | Right wins | Ties | Right win rate | Mean right-left reward delta |
+|---|---:|---:|---:|---:|---:|
+| Base vs SFT | 1044 | 927 | 46 | 45.96% | +0.1059 |
+| Base vs PPO | 1068 | 904 | 45 | 44.82% | -0.1327 |
+| SFT vs PPO | 965 | 898 | 154 | 44.52% | -0.2386 |
 
-- reward model `max_train_samples: 8000`
-- PPO `total_updates: 300`
-- PPO `rollout_batch_size: 4`
-- generation `max_new_tokens: 128`
+The honest conclusion is:
 
-If the run is stable, increase samples and PPO updates. If memory is tight, reduce `rollout_batch_size`, `max_prompt_length`, or `max_new_tokens`.
+> The final PPO policy is stable and produces long, complete responses, but it does not globally beat the base or SFT policy under the learned reward model. SFT modestly improves mean reward over base but loses pairwise more often than it wins. PPO wins a large minority of prompts and yields useful qualitative examples, but its aggregate reward-model performance is mixed.
 
-## Notes
+## How to interpret the negative reward values
 
-This implementation intentionally does not use TRL's PPOTrainer as the main engine. It uses Hugging Face Transformers, Datasets, PEFT/LoRA, and bitsandbytes for model infrastructure, but the PPO loop is implemented in this repository so the project remains a direct extension of the original policy-optimization codebase.
+The reward model outputs scalar scores on an arbitrary learned scale. The absolute value is not inherently meaningful: a score of `-3` does not mean the response is “bad” in any universal sense. What matters is the relative score between candidate responses to the same prompt.
+
+It is also normal for reward distributions to look roughly bell-shaped. The reward head is a learned scalar regressor/ranker on top of transformer representations. After training, many examples cluster near the model's typical score range, while outliers appear for unusually preferred or dispreferred responses. In PPO training we clipped rewards to control optimization, but the evaluation plots show raw reward-model outputs.
+
+## What this project demonstrates
+
+This phase is portfolio-worthy if framed correctly. It demonstrates:
+
+- an end-to-end RLHF pipeline, not just a TRL one-liner;
+- long-context SFT and reward-model training;
+- pairwise reward modeling with domain-level diagnostics;
+- token-level PPO with KL anchoring to a frozen SFT reference;
+- multiple real RLHF failure modes and fixes: gibberish drift, vulgar output, EOS/blank collapse, wrong checkpoint loading, and non-resumable long evaluation;
+- honest full-validation policy-suite evaluation;
+- curation tooling to inspect both wins and failures.
+
+It does **not** demonstrate that a 0.5B student-trained PPO adapter beats Qwen2.5-Instruct at scale. The right story is that the pipeline is technically serious, the reward model is credible, PPO is stable, but the empirical gain is mixed.
+
+## Recommended reading order
+
+- [`docs/rlhf_experiments.md`](rlhf_experiments.md): experiment timeline, failed runs, final metrics.
+- [`docs/rlhf_technical_notes.md`](rlhf_technical_notes.md): SFT/RM/PPO mechanics and why the hyperparameters matter.
+- [`docs/rlhf_curation_guide.md`](rlhf_curation_guide.md): how to pick portfolio examples from the final evaluation CSV.
+- `notebooks/analyzing_full_eval_results.ipynb`: summary analysis notebook for the final policy-suite outputs.
+- `notebooks/rlhf_full_eval_and_curation.ipynb`: interactive example browser and poster-child curation notebook.
