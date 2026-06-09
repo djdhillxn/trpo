@@ -168,16 +168,25 @@ Reference implementations:
 - Ilya Kostrikov's `ikostrikov/pytorch-trpo`: PyTorch TRPO implementation. https://github.com/ikostrikov/pytorch-trpo
 ## RLHF extension: Qwen2.5 + HelpSteer3 + token-level PPO
 
-This repository now includes an application-oriented RLHF extension under `trpo_repro/rlhf/`. It trains a HelpSteer3 preference reward model, then applies KL-controlled token-level PPO to Qwen2.5-0.5B-Instruct using LoRA adapters.
+This repository now includes an application-oriented RLHF extension under `trpo_repro/rlhf/`. The extension adapts the same conservative policy-optimization story from the original TRPO/PPO project to LLM post-training: supervised fine-tuning, pairwise reward modeling, KL-controlled token-level PPO using LoRA adapters, and policy-suite evaluation of Base/SFT/PPO responses.
 
-See `docs/rlhf_readme.md` for the full runbook.
+The final long-context run uses Qwen2.5-0.5B-Instruct with HelpSteer3, 4096-token SFT/reward-model training, 3072-token PPO prompts, and 512-token PPO/evaluation generations. The result is a realistic student-scale RLHF system: the reward model reaches 71.62% validation pairwise accuracy, PPO remains stable and generates full responses, but the base instruction model remains strongest overall under the learned reward model.
 
-Quick start:
+Start here: [`docs/rlhf_readme.md`](docs/rlhf_readme.md).
+
+Additional RLHF notes:
+
+- [`docs/rlhf_experiments.md`](docs/rlhf_experiments.md): experiment timeline, failed runs, final metrics.
+- [`docs/rlhf_technical_notes.md`](docs/rlhf_technical_notes.md): SFT/RM/PPO mechanics and token-budget reasoning.
+- [`docs/rlhf_curation_guide.md`](docs/rlhf_curation_guide.md): how to choose portfolio examples from the final suite output.
+
+Quick commands:
 
 ```bash
 pip install -r requirements-rlhf.txt
 pip install -e .
+python scripts/rlhf_train_sft_policy.py --config configs/rlhf/qwen25_05b_helpsteer3_sft.yaml
 python scripts/rlhf_train_reward_model.py --config configs/rlhf/qwen25_05b_helpsteer3_reward.yaml
 python scripts/rlhf_train_ppo.py --config configs/rlhf/qwen25_05b_helpsteer3_ppo.yaml
-python scripts/rlhf_evaluate_before_after.py --config configs/rlhf/qwen25_05b_helpsteer3_eval.yaml
+python scripts/rlhf_evaluate_policy_suite.py --config configs/rlhf/qwen25_05b_helpsteer3_eval_suite.yaml
 ```
