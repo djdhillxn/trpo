@@ -151,7 +151,7 @@ Final PPO configuration:
 
 The PPO run did not collapse: empty-rate stayed at zero, response lengths remained long, and the checkpoint loaded correctly in the final suite evaluation. However, it did not outperform the base or SFT policies overall.
 
-## Reported 512-token policy-suite evaluation
+## Primary 1024-token policy-suite evaluation
 
 Instead of running three separate pairwise evaluations, the final evaluator generates Base, SFT, and PPO responses once per prompt, scores all three with the same reward model, and derives all pairwise comparisons from the same table.
 
@@ -165,31 +165,32 @@ Final evaluation:
 - split: HelpSteer3 validation
 - examples: 2017
 - prompt budget: 3072 tokens
-- generation budget: 512 tokens
+- generation budget: 1024 tokens
 - policies: Base Qwen, SFT-4096, PPO-4096-epoch2-update400
+- output: `outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400_eval1024/`
 
-These metrics describe the completed 512-token evaluation. The current suite config raises the inference cap to 1024 tokens and writes to a separate output directory so the two runs remain comparable.
+The earlier 512-token evaluation is preserved in [`rlhf_evaluation_history.md`](rlhf_evaluation_history.md). The 1024-token suite is the primary result because it reduces cap hits from roughly 30% to 8-12%, although the two runs are not a perfectly controlled ablation because evaluation batch size also changed.
 
 ### Overall three-way winner counts
 
 | Policy | Wins | Win rate | Mean reward | Median response tokens | Cap-hit rate | Empty rate |
 |---|---:|---:|---:|---:|---:|---:|
-| Base | 827 | 41.00% | -3.5339 | 332 | 29.90% | 0.00% |
-| SFT-4096 | 556 | 27.57% | -3.4280 | 363 | 29.95% | 0.00% |
-| PPO-4096 | 525 | 26.03% | -3.6666 | 356 | 29.70% | 0.00% |
-| Tie | 109 | 5.40% | — | — | — | — |
+| Base | 978 | 48.49% | -3.3634 | 334 | 8.08% | 0.00% |
+| SFT-4096 | 475 | 23.55% | -3.6114 | 360 | 10.16% | 0.00% |
+| PPO-4096 | 467 | 23.15% | -3.5771 | 363 | 11.60% | 0.00% |
+| Tie | 97 | 4.81% | — | — | — | — |
 
 ### Pairwise comparisons
 
 | Comparison | Left wins | Right wins | Ties | Right win rate | Mean right-left reward delta |
 |---|---:|---:|---:|---:|---:|
-| Base vs SFT | 1044 | 927 | 46 | 45.96% | +0.1059 |
-| Base vs PPO | 1068 | 904 | 45 | 44.82% | -0.1327 |
-| SFT vs PPO | 965 | 898 | 154 | 44.52% | -0.2386 |
+| Base vs SFT | 1215 | 763 | 39 | 37.83% | -0.2480 |
+| Base vs PPO | 1190 | 785 | 42 | 38.92% | -0.2137 |
+| SFT vs PPO | 963 | 892 | 162 | 44.22% | +0.0343 |
 
-The results indicate:
+PPO's reward margins are asymmetric. Its 785 wins over Base average `+1.6210`, while its 1190 losses average `-1.4315`. Against SFT, PPO's winning margins also exceed its losing margins on average, producing the slightly positive aggregate delta despite fewer wins. This does not overturn the win-rate result: Base remains the strongest policy under the learned reward model.
 
-> The final PPO policy is stable and produces long, complete responses, but it does not globally beat the base or SFT policy under the learned reward model. SFT modestly improves mean reward over base but loses pairwise more often than it wins. PPO wins a large minority of prompts and yields useful qualitative examples, but its aggregate reward-model performance is mixed.
+The qualitative audit adds an important limitation. At 1024 tokens, more than 25% of word-level 4-grams are repeated in 7.49% of Base, 13.78% of SFT, and 16.11% of PPO responses. Several high-reward PPO outputs are visibly broken loops, fabricated citations, or irrelevant continuations. The reward model also occasionally assigns very low scores to comparatively useful responses. See [`rlhf_qualitative_audit.md`](rlhf_qualitative_audit.md) for the evidence and full selected responses.
 
 ## How to interpret the negative reward values
 
@@ -209,12 +210,15 @@ The implementation includes:
 - full-validation policy-suite evaluation;
 - curation tooling to inspect both wins and failures.
 
-The results do **not** show that a 0.5B PPO adapter beats Qwen2.5-Instruct at scale. The reward model provides a usable training signal and PPO remains stable, but the aggregate empirical gain is mixed.
+The results do **not** show that a 0.5B PPO adapter beats Qwen2.5-Instruct at scale. The reward model provides a usable training signal and PPO remains stable, but Base wins most comparisons and the longer audit exposes repetition and judge failures. The implementation, reproducible diagnostics, and concrete failure analysis are the main outcomes.
 
 ## Recommended reading order
 
-- [`docs/rlhf_experiments.md`](rlhf_experiments.md): experiment timeline, failed runs, final metrics.
-- [`docs/rlhf_technical_notes.md`](rlhf_technical_notes.md): SFT/RM/PPO mechanics and why the hyperparameters matter.
-- [`docs/rlhf_curation_guide.md`](rlhf_curation_guide.md): how to inspect and select examples from the final evaluation CSV.
+- [`rlhf_experiments.md`](rlhf_experiments.md): experiment timeline, failed runs, and final metrics.
+- [`rlhf_evaluation_history.md`](rlhf_evaluation_history.md): the primary 1024-token suite and archived 512-token baseline.
+- [`rlhf_qualitative_audit.md`](rlhf_qualitative_audit.md): manual analysis of useful responses, failures, and reward-model mismatches.
+- [`rlhf_technical_notes.md`](rlhf_technical_notes.md): SFT/RM/PPO mechanics and why the hyperparameters matter.
+- [`rlhf_curation_guide.md`](rlhf_curation_guide.md): how to reproduce and extend the qualitative review.
+- [`rlhf_future_work.md`](rlhf_future_work.md): a prioritized research program based on the observed limitations.
 - `notebooks/analyzing_full_eval_results.ipynb`: summary analysis notebook for the final policy-suite outputs.
 - `notebooks/rlhf_full_eval_and_curation.ipynb`: interactive example browser and curation notebook.

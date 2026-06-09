@@ -114,11 +114,21 @@ Several reasons are plausible:
 3. **Small model capacity.** A 0.5B policy has limited ability to improve while preserving broad capability.
 4. **Conservative PPO.** Strong KL and low learning rate prevent collapse but limit improvement.
 5. **Reward-model mismatch.** The reward model is trained on chosen/rejected pairs; PPO optimizes generated responses that may differ from the training distribution.
-6. **Long generation variance.** 512-token generations create more opportunity for both helpful detail and reward-hacking/noisy continuations.
+6. **Long generation variance.** The 1024-token evaluation creates more opportunity for both helpful detail and reward-hacking or noisy continuations than the 512-token PPO rollout horizon.
+7. **Stopping behavior.** PPO exceeds a 25% repeated word-level 4-gram fraction on 16.11% of the primary evaluation responses, compared with 7.49% for Base.
+8. **Reward-model blind spots.** Some of the highest-scoring PPO responses are repetition loops or prompt restatements, while some comparatively relevant responses receive low scores.
 
 These constraints help explain why the small-model RLHF experiment produced stable training without a clear aggregate improvement.
 
-## 8. Main artifacts
+## 8. Evaluation interpretation
+
+The primary 1024-token suite reduces cap-hit rates from roughly 30% to 8-12%, making it a better view of complete response behavior. It also shows why a larger inference budget is not automatically an improvement: longer continuations can reveal hallucination, irrelevance, and failure to stop.
+
+The reward model's 4096-token limit is a total sequence budget, not a 4096-token output allowance. With a 3072-token prompt and 1024-token response, evaluation remains within that budget. A 4096-token response after a long prompt would exceed the training and scoring configuration.
+
+The earlier 512-token and current 1024-token suites also used different batch sizes, so they should not be presented as a controlled one-variable experiment. See [`rlhf_evaluation_history.md`](rlhf_evaluation_history.md) for the numerical comparison and [`rlhf_qualitative_audit.md`](rlhf_qualitative_audit.md) for reviewed examples.
+
+## 9. Main artifacts
 
 | Artifact | Purpose |
 |---|---|
@@ -130,4 +140,7 @@ These constraints help explain why the small-model RLHF experiment produced stab
 | `outputs/rlhf/qwen25_05b_helpsteer3_sft_4096/` | SFT checkpoint and metrics |
 | `outputs/rlhf/qwen25_05b_helpsteer3_reward_4096_epoch2/` | final reward model |
 | `outputs/rlhf/qwen25_05b_helpsteer3_ppo_4096_epoch2_long512/` | final PPO checkpoint |
-| `outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400/` | final Base/SFT/PPO eval |
+| `outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400_eval1024/` | primary 1024-token Base/SFT/PPO evaluation |
+| `outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400/` | archived 512-token evaluation baseline |
+| `scripts/rlhf_audit_policy_suite.py` | full-suite repetition, margin, and curation audit |
+| `configs/rlhf/qwen25_05b_helpsteer3_eval1024_curation.json` | reviewed example manifest |

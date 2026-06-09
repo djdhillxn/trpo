@@ -170,7 +170,9 @@ Reference implementations:
 
 This repository now includes an application-oriented RLHF extension under `trpo_repro/rlhf/`. The extension adapts the same conservative policy-optimization story from the original TRPO/PPO project to LLM post-training: supervised fine-tuning, pairwise reward modeling, KL-controlled token-level PPO using LoRA adapters, and policy-suite evaluation of Base/SFT/PPO responses.
 
-The final long-context run uses Qwen2.5-0.5B-Instruct with HelpSteer3, 4096-token SFT/reward-model training, and 3072-token PPO prompts with 512-token PPO rollouts. The evaluation config allows up to 1024 new tokens at inference time while keeping the prompt-plus-response budget at 4096. The reported full-suite metrics come from the earlier 512-token evaluation: the reward model reaches 71.62% validation pairwise accuracy, PPO remains stable and generates full responses, but the base instruction model remains strongest overall under the learned reward model.
+The final long-context run uses Qwen2.5-0.5B-Instruct with HelpSteer3, 4096-token SFT/reward-model training, and 3072-token PPO prompts with 512-token PPO rollouts. The primary evaluation allows up to 1024 new tokens at inference time while keeping the prompt-plus-response budget at 4096. Across all 2017 validation prompts, cap-hit rates fall from roughly 30% in the earlier 512-token suite to 8.08% for Base, 10.16% for SFT, and 11.60% for PPO. Base still wins most often; PPO beats Base on 38.92% of prompts and has a mean reward delta of `-0.2137`, while PPO has a small positive mean delta of `+0.0343` against SFT.
+
+The longer evaluation also exposes failures that the shorter cap could hide. PPO has the highest measured repetition rate, and manual review finds both useful local improvements and severe reward-model mismatches. The result is therefore evidence for a stable, inspectable RLHF pipeline, not a claim that PPO globally improves this instruction model.
 
 Start here: [`docs/rlhf_readme.md`](docs/rlhf_readme.md).
 
@@ -178,7 +180,10 @@ Additional RLHF notes:
 
 - [`docs/rlhf_experiments.md`](docs/rlhf_experiments.md): experiment timeline, failed runs, final metrics.
 - [`docs/rlhf_technical_notes.md`](docs/rlhf_technical_notes.md): SFT/RM/PPO mechanics and token-budget reasoning.
-- [`docs/rlhf_curation_guide.md`](docs/rlhf_curation_guide.md): how to choose portfolio examples from the final suite output.
+- [`docs/rlhf_evaluation_history.md`](docs/rlhf_evaluation_history.md): primary 1024-token results and archived 512-token baseline.
+- [`docs/rlhf_qualitative_audit.md`](docs/rlhf_qualitative_audit.md): full-suite diagnostics and manually reviewed examples.
+- [`docs/rlhf_curation_guide.md`](docs/rlhf_curation_guide.md): how to reproduce and extend the qualitative review.
+- [`docs/rlhf_future_work.md`](docs/rlhf_future_work.md): research directions motivated by the observed failures.
 
 Quick commands:
 
@@ -189,4 +194,8 @@ python scripts/rlhf_train_sft_policy.py --config configs/rlhf/qwen25_05b_helpste
 python scripts/rlhf_train_reward_model.py --config configs/rlhf/qwen25_05b_helpsteer3_reward.yaml
 python scripts/rlhf_train_ppo.py --config configs/rlhf/qwen25_05b_helpsteer3_ppo.yaml
 python scripts/rlhf_evaluate_policy_suite.py --config configs/rlhf/qwen25_05b_helpsteer3_eval_suite.yaml
+python scripts/rlhf_audit_policy_suite.py \
+  --eval-dir outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400_eval1024 \
+  --baseline-dir outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400 \
+  --selection-file configs/rlhf/qwen25_05b_helpsteer3_eval1024_curation.json
 ```

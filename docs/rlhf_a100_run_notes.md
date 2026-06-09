@@ -1,7 +1,8 @@
-# A100 40GB RLHF run profile
+# Historical A100 40GB RLHF run profile
 
-This profile is meant for Google Colab A100 40GB with Qwen2.5-0.5B-Instruct.
-It favors speed and reasonable utilization over the earlier low-memory debug defaults.
+This note preserves the settings used during an early short-context stage of the project. It is not the configuration used for the final 4096-token SFT/reward-model runs, 512-token PPO rollouts, or 1024-token policy-suite evaluation. Use [`rlhf_readme.md`](rlhf_readme.md) for the current workflow.
+
+The historical profile targeted Google Colab A100 40GB with Qwen2.5-0.5B-Instruct and favored speed over the earlier low-memory debug defaults.
 
 ## Reward model
 
@@ -46,11 +47,18 @@ Only increase `minibatch_size` to 6 or 8 after confirming that the PPO update st
 
 ## Evaluation
 
-Use:
+The early workflow used:
 
 ```bash
 python3 scripts/rlhf_evaluate_before_after.py \
   --config configs/rlhf/qwen25_05b_helpsteer3_eval.yaml
 ```
 
-The default evaluates 200 validation prompts and writes JSONL, CSV, and Markdown before/after examples.
+It evaluated 200 validation prompts and wrote before/after artifacts. The completed project instead uses:
+
+```bash
+python3 scripts/rlhf_evaluate_policy_suite.py \
+  --config configs/rlhf/qwen25_05b_helpsteer3_eval_suite.yaml
+```
+
+The current suite compares Base, SFT, and PPO on all 2017 validation prompts. Results and caveats are documented in [`rlhf_evaluation_history.md`](rlhf_evaluation_history.md).
