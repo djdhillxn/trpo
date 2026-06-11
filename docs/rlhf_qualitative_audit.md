@@ -39,7 +39,7 @@ The 1024-token budget solves much of the truncation problem, but it does not sol
 
 The reward model catches some extreme loops. Index 86 repeats essentially one phrase for the entire PPO response and receives a very low reward. It misses other cases. Thirty-six PPO responses combine a reward above `2.0` with either more than 25% repeated 4-grams or a repeated 4-gram appearing at least five times. Several of the largest PPO reward margins belong to this group.
 
-The small sensitive-term scan found two PPO responses containing a listed term, both in prompts or discussions involving suicide. It did not find the earlier vulgar/debug vocabulary that appeared during unstable smoke runs. That is encouraging but limited: absence from a short term list is not evidence of broad safety.
+The small sensitive-term scan found two PPO responses containing a listed term, both in prompts or discussions involving suicide. It did not find the earlier vulgar/debug vocabulary that appeared during unstable preliminary runs. That is encouraging but limited: absence from a short term list is not evidence of broad safety.
 
 ## Qualified improvements
 

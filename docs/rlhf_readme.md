@@ -223,7 +223,7 @@ Final evaluation:
 - policies: Base Qwen, SFT-4096, PPO-4096-epoch2-update400
 - output: `outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400_eval1024/`
 
-The earlier 512-token evaluation is preserved in [`rlhf_evaluation_history.md`](rlhf_evaluation_history.md). The 1024-token suite is the primary result because it reduces cap hits from roughly 30% to 8-12% and gives a better view of complete response behavior. A larger inference budget is not automatically better, however: longer continuations also expose hallucination, irrelevance, repetition, and failure to stop.
+The earlier 512-token evaluation is preserved in the chronological [`rlhf_experiments.md`](rlhf_experiments.md) log. The 1024-token suite is the primary result because it reduces cap hits from roughly 30% to 8-12% and gives a better view of complete response behavior. A larger inference budget is not automatically better, however: longer continuations also expose hallucination, irrelevance, repetition, and failure to stop.
 
 The 512-token and 1024-token suites should not be presented as a controlled one-variable ablation because evaluation batch size also changed. The final 3072-token prompt plus 1024-token response remains within the reward model's 4096-token total sequence budget; a 4096-token response following a long prompt would not.
 
@@ -296,8 +296,7 @@ The results do **not** show that a 0.5B PPO adapter beats Qwen2.5-Instruct at sc
 
 ## Recommended reading order
 
-- [`rlhf_experiments.md`](rlhf_experiments.md): experiment timeline, failed runs, and final metrics.
-- [`rlhf_evaluation_history.md`](rlhf_evaluation_history.md): the primary 1024-token suite and archived 512-token baseline.
+- [`rlhf_experiments.md`](rlhf_experiments.md): experiment timeline, failed runs, archived 512-token baseline, and primary 1024-token evaluation.
 - [`rlhf_qualitative_audit.md`](rlhf_qualitative_audit.md): manual analysis of useful responses, failures, and reward-model mismatches.
 - [`rlhf_curation_guide.md`](rlhf_curation_guide.md): how to reproduce and extend the qualitative review.
 - [`rlhf_future_work.md`](rlhf_future_work.md): a prioritized research program based on the observed limitations.

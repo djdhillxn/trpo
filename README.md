@@ -178,8 +178,7 @@ Start here: [`docs/rlhf_readme.md`](docs/rlhf_readme.md).
 
 Additional RLHF notes:
 
-- [`docs/rlhf_experiments.md`](docs/rlhf_experiments.md): experiment timeline, failed runs, final metrics.
-- [`docs/rlhf_evaluation_history.md`](docs/rlhf_evaluation_history.md): primary 1024-token results and archived 512-token baseline.
+- [`docs/rlhf_experiments.md`](docs/rlhf_experiments.md): experiment timeline, failed runs, archived 512-token baseline, and primary 1024-token results.
 - [`docs/rlhf_qualitative_audit.md`](docs/rlhf_qualitative_audit.md): full-suite diagnostics and manually reviewed examples.
 - [`docs/rlhf_curation_guide.md`](docs/rlhf_curation_guide.md): how to reproduce and extend the qualitative review.
 - [`docs/rlhf_future_work.md`](docs/rlhf_future_work.md): research directions motivated by the observed failures.

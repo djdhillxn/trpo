@@ -31,8 +31,7 @@ run sanity-check tables.
 | [`instruction_manual.md`](instruction_manual.md) | Detailed CLI reference, config inventory, method notes, and operational guidance. |
 | [`colab_runmanager.ipynb`](colab_runmanager.ipynb) | Reference notebook for launching and managing the training runs. |
 | [`rlhf_readme.md`](rlhf_readme.md) | Main Qwen2.5 and HelpSteer3 RLHF guide, including objectives, token budgets, PPO mechanics, results, and interpretation. |
-| [`rlhf_experiments.md`](rlhf_experiments.md) | SFT, reward-model, PPO, and policy-suite experiment history. |
-| [`rlhf_evaluation_history.md`](rlhf_evaluation_history.md) | Primary 1024-token evaluation and archived 512-token baseline. |
+| [`rlhf_experiments.md`](rlhf_experiments.md) | Chronological SFT, reward-model, PPO, and policy-suite history, including both full evaluations. |
 | [`rlhf_qualitative_audit.md`](rlhf_qualitative_audit.md) | Full-suite diagnostics and manually reviewed examples. |
 | [`rlhf_curation_guide.md`](rlhf_curation_guide.md) | Reproducible workflow for extending the qualitative review. |
 | [`rlhf_future_work.md`](rlhf_future_work.md) | Detailed research directions motivated by the final audit. |

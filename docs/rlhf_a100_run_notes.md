@@ -61,4 +61,4 @@ python3 scripts/rlhf_evaluate_policy_suite.py \
   --config configs/rlhf/qwen25_05b_helpsteer3_eval_suite.yaml
 ```
 
-The current suite compares Base, SFT, and PPO on all 2017 validation prompts. Results and caveats are documented in [`rlhf_evaluation_history.md`](rlhf_evaluation_history.md).
+The current suite compares Base, SFT, and PPO on all 2017 validation prompts. Results and caveats are documented in [`rlhf_experiments.md`](rlhf_experiments.md).
