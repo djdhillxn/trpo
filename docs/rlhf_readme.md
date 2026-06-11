@@ -68,6 +68,8 @@ Earlier experiments used short output budgets such as 128 new tokens. Those runs
 
 The evaluation budget is larger than the PPO rollout budget: inference is not required to use the same response cap as training. A 3072-token prompt plus 1024 generated tokens remains within the 4096-token sequence length used for SFT and reward-model training.
 
+RLHF training is substantially more expensive than inference because it must keep the policy, frozen reference, reward model, value head, token log-probabilities, masks, and rollout tensors in memory. The 512-token PPO response cap therefore controls training cost, while the 1024-token evaluation budget tests behavior over longer continuations. The reward model's 4096-token limit is a **total prompt-plus-response budget**, not permission to score a 4096-token response after an already long prompt.
+
 ## Why 4096 mattered
 
 A token-length diagnostic showed that the earlier 1024-token SFT/RM cap was too small for HelpSteer3:
@@ -101,7 +103,19 @@ Final SFT configuration:
 - learning rate: `5e-6`
 - output: `outputs/rlhf/qwen25_05b_helpsteer3_sft_4096/`
 
-The SFT stage teaches the policy to imitate the preferred HelpSteer3 response. It is the supervised alignment baseline and also the starting/reference policy for PPO.
+The SFT stage teaches the policy to imitate the preferred HelpSteer3 response. It is the supervised alignment baseline and also the starting/reference policy for PPO. Given a rendered prompt `x` and preferred response `y`, the causal LM is trained on the concatenated sequence:
+
+```text
+[prompt tokens][assistant response tokens]
+```
+
+The prompt tokens provide context, but the loss is masked there and computed only on assistant response tokens:
+
+```text
+L_SFT(theta) = - sum_t log pi_theta(y_t | x, y_<t)
+```
+
+The 4096-token limit matters because HelpSteer3 contains both long prompts and long preferred responses. As the truncation table above shows, the 1024-token configuration truncated about 38% of chosen SFT sequences, while the final configuration truncated less than 1%.
 
 ### 2. Reward model
 
@@ -110,7 +124,19 @@ python scripts/rlhf_train_reward_model.py \
   --config configs/rlhf/qwen25_05b_helpsteer3_reward.yaml
 ```
 
-The final reward model was trained in two one-epoch runs: first from Qwen, then resumed from the best checkpoint for a second epoch.
+The reward model takes a complete prompt-response pair and returns a scalar:
+
+```text
+r_phi(prompt, response) -> real number
+```
+
+It is trained on HelpSteer3 chosen/rejected pairs with a Bradley-Terry logistic ranking loss:
+
+```text
+L_RM(phi) = - log sigmoid(r_phi(chosen) - r_phi(rejected))
+```
+
+The objective rewards a positive margin between the chosen and rejected responses. The final reward model was trained in two one-epoch runs: first from Qwen, then resumed from the best checkpoint for a second epoch.
 
 Final reward-model result:
 
@@ -127,12 +153,40 @@ Final reward-model result:
 
 The model is useful as a PPO training signal, but it is not a perfect judge. Reward-model-based win rates are proxy metrics rather than ground-truth human preferences.
 
+The scalar output is not calibrated to an external human score, so its sign is not intrinsically meaningful. Adding a constant to every reward would leave all pairwise preferences unchanged; a response scored `-3.5` can still be preferred to one scored `-5.0` for the same prompt. The final histograms are roughly bell-shaped because most prompt-response pairs fall within the model's usual scoring range while unusually preferred or dispreferred examples form the tails. The important quantities are margins and rankings. PPO training clips rewards for optimization stability, whereas the evaluation plots report raw reward-model outputs.
+
 ### 3. PPO post-training
 
 ```bash
 python scripts/rlhf_train_ppo.py \
   --config configs/rlhf/qwen25_05b_helpsteer3_ppo.yaml
 ```
+
+In language-model PPO, each generated token is an action and the complete assistant response is a rollout. For prompt `x`, the current policy samples:
+
+```text
+y ~ pi_theta(. | x)
+```
+
+The reward model scores the response, while a KL penalty discourages movement away from the frozen SFT reference:
+
+```text
+R_total = R_model - beta * KL(pi_theta || pi_ref)
+```
+
+Only response-token log-probabilities participate in the policy-gradient loss. Prompt tokens are context rather than sampled actions. For each response token, PPO compares the updated policy with the policy that generated the rollout:
+
+```text
+ratio_t(theta) = pi_theta(a_t | s_t) / pi_old(a_t | s_t)
+```
+
+It then optimizes the clipped surrogate:
+
+```text
+L_clip(theta) = E[min(ratio_t A_t, clip(ratio_t, 1-eps, 1+eps) A_t)]
+```
+
+Clipping limits how much reward-model incentive can be extracted from the same sampled token batch. This is the language-model analogue of PPO's trust-region motivation.
 
 Final PPO configuration:
 
@@ -146,10 +200,10 @@ Final PPO configuration:
 - PPO epochs per rollout batch: 1
 - learning rate: `3e-7`
 - clip range: 0.06
-- KL coefficient: initialized at 0.18 with minimum 0.14
+- KL coefficient: initialized at 0.18, with minimum 0.14 and maximum 3.0
 - output: `outputs/rlhf/qwen25_05b_helpsteer3_ppo_4096_epoch2_long512/`
 
-The PPO run did not collapse: empty-rate stayed at zero, response lengths remained long, and the checkpoint loaded correctly in the final suite evaluation. However, it did not outperform the base or SFT policies overall.
+The frozen SFT reference is essential: without that anchor, reward optimization can drift into empty answers, repetition, multilingual drift, or high-reward nonsense. These settings were conservative enough to avoid collapse, but that conservatism may also have limited improvement. Empty-rate stayed at zero, response lengths remained long, and the checkpoint loaded correctly in the final suite evaluation. However, PPO did not outperform the Base or SFT policies overall.
 
 ## Primary 1024-token policy-suite evaluation
 
@@ -169,7 +223,9 @@ Final evaluation:
 - policies: Base Qwen, SFT-4096, PPO-4096-epoch2-update400
 - output: `outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400_eval1024/`
 
-The earlier 512-token evaluation is preserved in [`rlhf_evaluation_history.md`](rlhf_evaluation_history.md). The 1024-token suite is the primary result because it reduces cap hits from roughly 30% to 8-12%, although the two runs are not a perfectly controlled ablation because evaluation batch size also changed.
+The earlier 512-token evaluation is preserved in [`rlhf_evaluation_history.md`](rlhf_evaluation_history.md). The 1024-token suite is the primary result because it reduces cap hits from roughly 30% to 8-12% and gives a better view of complete response behavior. A larger inference budget is not automatically better, however: longer continuations also expose hallucination, irrelevance, repetition, and failure to stop.
+
+The 512-token and 1024-token suites should not be presented as a controlled one-variable ablation because evaluation batch size also changed. The final 3072-token prompt plus 1024-token response remains within the reward model's 4096-token total sequence budget; a 4096-token response following a long prompt would not.
 
 ### Overall three-way winner counts
 
@@ -192,11 +248,20 @@ PPO's reward margins are asymmetric. Its 785 wins over Base average `+1.6210`, w
 
 The qualitative audit adds an important limitation. At 1024 tokens, more than 25% of word-level 4-grams are repeated in 7.49% of Base, 13.78% of SFT, and 16.11% of PPO responses. Several high-reward PPO outputs are visibly broken loops, fabricated citations, or irrelevant continuations. The reward model also occasionally assigns very low scores to comparatively useful responses. See [`rlhf_qualitative_audit.md`](rlhf_qualitative_audit.md) for the evidence and full selected responses.
 
-## How to interpret the negative reward values
+## Why PPO did not dominate
 
-The reward model outputs scalar scores on an arbitrary learned scale. The absolute value is not inherently meaningful: a score of `-3` does not mean the response is “bad” in any universal sense. What matters is the relative score between candidate responses to the same prompt.
+Several constraints plausibly explain why training remained stable without producing a clear aggregate improvement:
 
-It is also normal for reward distributions to look roughly bell-shaped. The reward head is a learned scalar regressor/ranker on top of transformer representations. After training, many examples cluster near the model's typical score range, while outliers appear for unusually preferred or dispreferred responses. In PPO training we clipped rewards to control optimization, but the evaluation plots show raw reward-model outputs.
+1. **The Base model is already instruction-tuned.** Qwen2.5-0.5B-Instruct is a post-trained assistant rather than an unaligned pretrained language model.
+2. **The reward model is imperfect.** Its 71.62% validation accuracy provides a useful signal but is not equivalent to a human judge.
+3. **The policy is small.** A 0.5B model has limited capacity to improve preference behavior while preserving broad capability.
+4. **PPO is deliberately conservative.** Strong KL anchoring and a low learning rate reduce collapse risk but also constrain improvement.
+5. **PPO induces distribution shift.** The reward model learns from chosen/rejected dataset responses, while PPO optimizes newly generated responses that may fall outside that training distribution.
+6. **Long generations increase variance.** A 1024-token evaluation allows useful detail but also more reward hacking, noisy continuation, hallucination, and irrelevance than the 512-token PPO rollout horizon.
+7. **Stopping behavior remains weak.** PPO exceeds the 25% repeated word-level 4-gram threshold on 16.11% of primary-evaluation responses, versus 7.49% for Base.
+8. **The reward model has blind spots.** Some high-scoring PPO responses are repetition loops or prompt restatements, while some comparatively relevant responses receive very low scores.
+
+Together, these factors are consistent with a successful systems experiment and stable optimization, but not with a claim of general policy improvement.
 
 ## Scope and findings
 
@@ -212,12 +277,28 @@ The implementation includes:
 
 The results do **not** show that a 0.5B PPO adapter beats Qwen2.5-Instruct at scale. The reward model provides a usable training signal and PPO remains stable, but Base wins most comparisons and the longer audit exposes repetition and judge failures. The implementation, reproducible diagnostics, and concrete failure analysis are the main outcomes.
 
+## Main artifacts
+
+| Artifact | Purpose |
+|---|---|
+| `configs/rlhf/qwen25_05b_helpsteer3_sft.yaml` | final SFT configuration |
+| `configs/rlhf/qwen25_05b_helpsteer3_reward.yaml` | final reward-model configuration |
+| `configs/rlhf/qwen25_05b_helpsteer3_ppo.yaml` | final PPO configuration |
+| `configs/rlhf/qwen25_05b_helpsteer3_eval_suite.yaml` | final policy-suite evaluation configuration |
+| `outputs/rlhf/length_diagnostics/` | token-length and truncation study |
+| `outputs/rlhf/qwen25_05b_helpsteer3_sft_4096/` | SFT checkpoint and metrics |
+| `outputs/rlhf/qwen25_05b_helpsteer3_reward_4096_epoch2/` | final reward model |
+| `outputs/rlhf/qwen25_05b_helpsteer3_ppo_4096_epoch2_long512/` | final PPO checkpoint |
+| `outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400_eval1024/` | primary 1024-token Base/SFT/PPO evaluation |
+| `outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400/` | archived 512-token evaluation baseline |
+| `scripts/rlhf_audit_policy_suite.py` | repetition, reward-margin, and curation audit |
+| `configs/rlhf/qwen25_05b_helpsteer3_eval1024_curation.json` | reviewed-example manifest |
+
 ## Recommended reading order
 
 - [`rlhf_experiments.md`](rlhf_experiments.md): experiment timeline, failed runs, and final metrics.
 - [`rlhf_evaluation_history.md`](rlhf_evaluation_history.md): the primary 1024-token suite and archived 512-token baseline.
 - [`rlhf_qualitative_audit.md`](rlhf_qualitative_audit.md): manual analysis of useful responses, failures, and reward-model mismatches.
-- [`rlhf_technical_notes.md`](rlhf_technical_notes.md): SFT/RM/PPO mechanics and why the hyperparameters matter.
 - [`rlhf_curation_guide.md`](rlhf_curation_guide.md): how to reproduce and extend the qualitative review.
 - [`rlhf_future_work.md`](rlhf_future_work.md): a prioritized research program based on the observed limitations.
 - `notebooks/analyzing_full_eval_results.ipynb`: summary analysis notebook for the final policy-suite outputs.

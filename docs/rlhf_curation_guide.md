@@ -1,72 +1,55 @@
 # RLHF Curation Guide
 
-The final aggregate PPO win rate is mixed, so no single headline number captures the result. The policy-suite outputs are most useful when reviewed across both wins and failures.
+The primary evaluation contains 2017 prompts and three generated responses per prompt. Curation should therefore begin with reproducible filters, then use manual review to decide what the examples actually demonstrate. Reward margin alone is not a quality label: several extreme scores in this run belong to repetitive or factually broken responses.
 
-Main file:
+Primary evaluation:
 
 ```text
-outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400/policy_suite_samples.csv
+outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400_eval1024/
 ```
 
-This file contains the full prompt, Base response, SFT response, PPO response, reward scores, response lengths, cap-hit flags, and pairwise winners for all 2017 validation prompts.
+## Reproduce the audit
 
-## Recommended example categories
+Run:
 
-Review 8-12 examples across these buckets:
-
-1. **Clear PPO wins**: PPO reward higher than both Base and SFT, and the response is visibly more direct/useful.
-2. **SFT wins**: shows that supervised alignment did meaningful work.
-3. **Base wins**: failure cases where the original instruction model remains stronger.
-4. **Ties / near ties**: cases where all policies produce nearly identical outputs.
-5. **Bad PPO examples**: one or two examples where PPO rambles, repeats, or worsens the answer.
-
-Including failures avoids presenting a cherry-picked view of the results.
-
-## Useful filters
-
-```python
-import pandas as pd
-
-df = pd.read_csv("outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400/policy_suite_samples.csv")
-
-# Strong PPO wins over both Base and SFT
-ppo_wins = df[
-    (df["winner"] == "ppo_4096_ep2_u400") &
-    (df["delta_ppo_4096_ep2_u400_minus_base"] > 2.0) &
-    (df["delta_ppo_4096_ep2_u400_minus_sft_4096"] > 1.0)
-].sort_values("delta_ppo_4096_ep2_u400_minus_base", ascending=False)
-
-# PPO loses badly to Base
-ppo_losses = df[
-    (df["winner_base_vs_ppo_4096_ep2_u400"] == "base") &
-    (df["delta_ppo_4096_ep2_u400_minus_base"] < -5.0)
-].sort_values("delta_ppo_4096_ep2_u400_minus_base")
-
-# Cases where SFT improves over Base
-sft_wins = df[
-    (df["winner_base_vs_sft_4096"] == "sft_4096") &
-    (df["delta_sft_4096_minus_base"] > 2.0)
-].sort_values("delta_sft_4096_minus_base", ascending=False)
+```bash
+python scripts/rlhf_audit_policy_suite.py \
+  --eval-dir outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400_eval1024 \
+  --baseline-dir outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400 \
+  --selection-file configs/rlhf/qwen25_05b_helpsteer3_eval1024_curation.json
 ```
 
-## Initial candidate indices
+This scans every Base, SFT, and PPO response and writes candidate tables for low-repetition PPO wins, strong PPO losses, repetition risks, reward-model mismatches, and the comparison with the 512-token baseline.
 
-These are starting points for manual review, not final selections.
+The reviewed manifest generates:
 
-| Index | Why inspect it |
-|---:|---|
-| 0 | code prompt; PPO/SFT produce cleaner React answer than truncated Base |
-| 9 | Japanese menu prompt; PPO is more directly responsive than Base/SFT |
-| 799 | strong PPO reward-model win; TypeScript/code example |
-| 966 | Python/code example where PPO beats both Base and SFT by reward model |
-| 1040 | multilingual example where PPO beats both Base and SFT |
-| 1496 | general example where PPO gives much longer answer than short/refusal-like alternatives |
-| 1485 | strong PPO failure; useful as a negative example |
-| 11 | SFT/PPO degenerate repetition; useful to discuss failure modes |
-| 353 | PPO produces unsafe/strange continuation; useful as a failure case |
+[`selected_qualitative_examples.md`](../outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400_eval1024/selected_qualitative_examples.md)
 
-Use the curation notebook to inspect full text before publishing any example. Some high-reward examples may contain factual errors or may only win because the reward model prefers length/formatting.
+That document contains the full prompt and all three policy responses, so readers can inspect the evidence without running a notebook.
 
-## Summary
+## Review categories
 
-The final PPO policy did not dominate the base instruction model in aggregate. The main outcomes are a working RLHF pipeline, instructive qualitative examples, and diagnostics covering long-context SFT/RM data coverage, reward-model accuracy, KL-controlled PPO, checkpoint validation, and full-suite evaluation.
+A defensible report should include several kinds of evidence. Qualified improvements show prompts where PPO or SFT is more useful, direct, or supportive, while preserving caveats about factuality. Base wins reveal capability regression. Repetition and irrelevant continuations test stopping behavior. Factual failures cover fabricated citations, invalid code or equations, and unsupported technical claims. Reward-model mismatches show where numerical preference and visible response quality disagree.
+
+The current reviewed set includes:
+
+| Indices | Purpose |
+|---|---|
+| 2, 1210, 1158, 0, 418, 1511 | qualified local improvements and near ties |
+| 1970, 1303, 176, 1835 | factual, safety, relevance, and stopping failures |
+| 346, 1281, 1579, 656, 1548 | high-confidence reward-model mismatches |
+| 86 | severe repetition that the reward model correctly penalizes |
+
+The interpretation of these examples is recorded in [`rlhf_qualitative_audit.md`](rlhf_qualitative_audit.md).
+
+## Interactive notebooks
+
+`notebooks/analyzing_full_eval_results.ipynb` provides aggregate tables and candidate views. `notebooks/rlhf_full_eval_and_curation.ipynb` provides an interactive browser and Markdown export. Both now point to the 1024-token evaluation directory and use the updated reviewed indices.
+
+Notebook outputs were cleared after the source paths changed, so rerunning the cells in Colab will populate them entirely from the 1024-token suite.
+
+## Publication standard
+
+Before presenting an example as an improvement, check instruction following, correctness, completeness, relevance, repetition, safety, and whether the reward advantage reflects substance rather than verbosity or formatting. Technical examples should be executed or independently verified. Scientific claims and citations should be checked against reliable sources.
+
+The appropriate conclusion from this run is balanced: PPO produces some useful local changes, but Base remains stronger overall and the longer evaluation reveals significant stopping and reward-model failures. Curation should make that mixed result easier to understand, not hide it.
