@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import statistics
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -33,7 +34,14 @@ class VideoRunSummary:
     config_path: str
     checkpoint_path: str
     output_dir: str
+    run_name: str
+    environment: str
+    method: str
+    variant: str
+    checkpoint_name: str
     policy_mode: str
+    record_selection: str
+    seed: int
     episodes: int
     selected_episode: int
     selected_return: float
@@ -41,6 +49,7 @@ class VideoRunSummary:
     return_mean: float
     return_std: float
     length_mean: float
+    artifact_stem: str
     video_path: str
     json_path: str
     csv_path: str
@@ -95,6 +104,54 @@ def _checkpoint_state(ckpt: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(state, dict):
         raise ValueError("Checkpoint does not contain a usable method state. Expected key 'state' or 'policy'.")
     return state
+
+
+def _filename_token(value: Any, fallback: str = "artifact") -> str:
+    token = re.sub(r"[^a-z0-9_-]+", "_", str(value).strip().lower())
+    token = re.sub(r"_+", "_", token).strip("_-")
+    return token or fallback
+
+
+def _artifact_stem(
+    *,
+    cfg: DotDict,
+    method,
+    checkpoint_path: str | Path,
+    policy_mode: PolicyMode,
+    seed: int,
+    record_selection: RecordSelection,
+    episodes: int,
+) -> str:
+    run_name = _filename_token(cfg.train.get("run_name", "atari_policy"), fallback="atari_policy")
+    method_name = _filename_token(method.name, fallback="policy")
+    variant = _filename_token(method.variant, fallback="default")
+    checkpoint_name = _filename_token(Path(checkpoint_path).stem, fallback="checkpoint")
+    return "__".join(
+        [
+            run_name,
+            f"{method_name}-{variant}",
+            f"ckpt-{checkpoint_name}",
+            _filename_token(policy_mode),
+            f"seed-{int(seed)}",
+            f"{_filename_token(record_selection)}-of-{int(episodes)}",
+        ]
+    )
+
+
+def _next_available_artifact_stem(output_dir: Path, base_stem: str) -> str:
+    if not any(output_dir.glob(f"{base_stem}__*")):
+        return base_stem
+    run_number = 2
+    while any(output_dir.glob(f"{base_stem}__run-{run_number:02d}__*")):
+        run_number += 1
+    return f"{base_stem}__run-{run_number:02d}"
+
+
+def _seed_rollout(seed: int, device: torch.device) -> None:
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def _make_render_env(cfg: DotDict, seed: int):
@@ -251,6 +308,7 @@ def render_policy_video(
 
     output_dir = Path(output_dir).expanduser()
     device_t = torch.device(device)
+    _seed_rollout(int(seed), device_t)
     cfg, env, method, obs_rms = load_policy_for_video(config_path, checkpoint_path, device_t, seed=seed)
 
     title = title or f"{method.name.upper()} {method.variant} on {cfg.env.id}"
@@ -329,20 +387,37 @@ def render_policy_video(
     if selected_summary is None or selected_frames is None:
         raise RuntimeError("No episode was recorded. Check that the Atari env supports rgb_array rendering.")
 
-    video_name = f"{cfg.env.id.split('/')[-1].lower().replace('-', '_')}_{method.name}_{method.variant}_{policy_mode}_ep{selected_summary.episode}.mp4"
-    video_path = output_dir / video_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    base_stem = _artifact_stem(
+        cfg=cfg,
+        method=method,
+        checkpoint_path=checkpoint_path,
+        policy_mode=policy_mode,
+        seed=seed,
+        record_selection=record_selection,
+        episodes=len(episode_summaries),
+    )
+    artifact_stem = _next_available_artifact_stem(output_dir, base_stem)
+    video_path = output_dir / f"{artifact_stem}__selected-ep-{selected_summary.episode}.mp4"
     _write_mp4(selected_frames, video_path, fps=int(fps))
     selected_summary.video_path = str(video_path)
 
     returns = [ep.return_ for ep in episode_summaries]
     lengths = [ep.length for ep in episode_summaries]
-    csv_path = output_dir / "episode_summary.csv"
-    json_path = output_dir / "video_summary.json"
+    csv_path = output_dir / f"{artifact_stem}__episodes.csv"
+    json_path = output_dir / f"{artifact_stem}__summary.json"
     run_summary = VideoRunSummary(
         config_path=str(config_path),
         checkpoint_path=str(checkpoint_path),
         output_dir=str(output_dir),
+        run_name=str(cfg.train.get("run_name", "atari_policy")),
+        environment=str(cfg.env.id),
+        method=str(method.name),
+        variant=str(method.variant),
+        checkpoint_name=Path(checkpoint_path).name,
         policy_mode=policy_mode,
+        record_selection=record_selection,
+        seed=int(seed),
         episodes=len(episode_summaries),
         selected_episode=selected_summary.episode,
         selected_return=selected_summary.return_,
@@ -350,6 +425,7 @@ def render_policy_video(
         return_mean=float(statistics.mean(returns)),
         return_std=float(statistics.pstdev(returns)) if len(returns) > 1 else 0.0,
         length_mean=float(statistics.mean(lengths)),
+        artifact_stem=artifact_stem,
         video_path=str(video_path),
         json_path=str(json_path),
         csv_path=str(csv_path),
