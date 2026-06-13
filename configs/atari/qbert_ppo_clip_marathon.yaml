@@ -1,0 +1,54 @@
+inherits: ../base.yaml
+
+train:
+  seed: 0
+  run_name: qbert_ppo_clip_marathon
+  epochs: 2000
+  steps_per_epoch: 32768
+  max_ep_len: 10000
+  save_interval: 10
+  normalize_obs: false
+  memory_mode: standard
+  progress_mode: auto
+  obs_storage: ram
+  num_workers: 12
+
+env:
+  type: atari
+  id: ALE/Qbert-v5
+  repeat_action_probability: 0.0
+  full_action_space: false
+  noop_max: 30
+  frame_skip: 4
+  screen_size: 84
+  terminal_on_life_loss: false
+  frame_stack: 4
+
+method:
+  name: ppo
+  variant: clip
+
+algo:
+  gamma: 0.99
+  lam: 0.95
+  estimator: gae
+  normalize_weights: true
+  bootstrap_truncated_paths: true
+  ppo_clip_ratio: 0.1
+  ppo_update_epochs: 4
+  ppo_minibatch_size: 1024
+  ppo_eval_batch_size: 4096
+  ppo_target_kl: 0.01
+  ppo_pi_lr: 0.00025
+  ppo_vf_lr: 0.00025
+  ppo_vf_epochs: 4
+  ppo_entropy_coef: 0.01
+  ppo_max_grad_norm: 0.5
+  ppo_anneal_lr: true
+  ppo_anneal_clip_ratio: true
+
+model:
+  activation: relu
+  policy_hidden_sizes: []
+  value_hidden_sizes: []
+  cnn_fc_dim: 256
